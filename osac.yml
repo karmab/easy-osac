@@ -1,0 +1,34 @@
+cluster: osac
+domain: karmalabs.corp
+force: true
+ovn_hostrouting: true
+ctlplanes: 3
+workers: 0
+version: stable
+network: baremetalfake
+api_ip: 192.168.254.254
+metal3: true
+sslip: true
+numcpus: 64
+memory: 98304
+bootstrap_memory: 8192
+disk_size: 80
+extra_disks:
+- 300
+apps:
+- local-storage-operator
+- odf-operator
+- multi-cluster-engine
+- users
+- metallb-operator
+#- kubevirt-hyperconverged
+#- ansible-automation-platform-operator
+#- cert-manager
+#- amq-streams
+#- sriov-network-operator
+#sriov_kvm: true
+#extra_networks:
+#- name: sriov-network
+#  sriov: true
+metallb_ranges:
+- 192.168.254.242-192.168.254.251

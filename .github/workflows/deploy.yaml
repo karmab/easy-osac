@@ -1,0 +1,62 @@
+name: DEPLOY
+on:
+  workflow_dispatch:
+    inputs:
+      CLUSTER:
+        description: "Cluster Name"
+        required: true
+        default: osac
+      KUBECONFIG:
+        description: 'KUBECONFIG'
+      PULLSECRET:
+        description: 'Pull Secret'
+        required: false
+        default: /root/openshift_pull.json
+      DEPLOY_CLUSTER:
+        description: "Deploy cluster"
+        required: true
+        default: true
+        type: boolean
+      DEPLOY_OSAC:
+        description: "Deploy OSAC"
+        required: true
+        default: true
+        type: boolean
+      RUN_TESTS:
+        description: "Run tests"
+        required: true
+        default: true
+        type: boolean
+
+env:
+ HOME: /root
+ PYTHONUNBUFFERED: true
+ CLUSTER: ${{github.event.inputs.CLUSTER}}
+ KUBECONFIG: ${{github.event.inputs.KUBECONFIG}}
+
+jobs:
+  deploy-cluster:
+    if: ${{ inputs.DEPLOY_CLUSTER }}
+    runs-on: hypervisor
+    steps:
+    - uses: actions/checkout@v2
+    - run: git pull origin ${GITHUB_REF##*/}
+    - run: kcli create cluster openshift --pf osac.yml -P pull_secret=$PULLSECRET $CLUSTER
+
+  deploy-osac:
+    needs: deploy-cluster
+    if: ${{ always() && inputs.DEPLOY_OSAC && !failure() }}
+    runs-on: hypervisor
+    steps:
+    - uses: actions/checkout@v2
+    - run: git pull origin ${GITHUB_REF##*/}
+    - run: KUBECONFIG=${KUBECONFIG:-/root/.kcli/clusters/$CLUSTER/auth/kubeconfig} bash deploy-osac.sh
+
+  run-tests:
+    if: ${{ always() && inputs.RUN_TESTS && !failure() }}
+    needs: deploy-osac
+    runs-on: hypervisor
+    steps:
+    - uses: actions/checkout@v2
+    - run: git pull origin ${GITHUB_REF##*/}
+    - run: KUBECONFIG=${KUBECONFIG:-/root/.kcli/clusters/$CLUSTER/auth/kubeconfig} MODEL=$MODEL bash tests.sh
