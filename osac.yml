@@ -18,7 +18,6 @@ extra_disks:
 apps:
 - local-storage-operator
 - odf-operator
-- multi-cluster-engine
 - users
 - metallb-operator
 #- kubevirt-hyperconverged

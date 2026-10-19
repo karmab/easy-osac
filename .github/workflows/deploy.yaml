@@ -8,7 +8,7 @@ on:
         default: osac
       KUBECONFIG:
         description: 'KUBECONFIG'
-      PULLSECRET:
+      PULL_SECRET:
         description: 'Pull Secret'
         required: false
         default: /root/openshift_pull.json
@@ -33,6 +33,7 @@ env:
  PYTHONUNBUFFERED: true
  CLUSTER: ${{github.event.inputs.CLUSTER}}
  KUBECONFIG: ${{github.event.inputs.KUBECONFIG}}
+ PULL_SECRET: ${{github.event.inputs.PULL_SECRET}}
 
 jobs:
   deploy-cluster:
@@ -41,7 +42,7 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - run: git pull origin ${GITHUB_REF##*/}
-    - run: kcli create cluster openshift --pf osac.yml -P pull_secret=$PULLSECRET $CLUSTER
+    - run: kcli create cluster openshift --pf osac.yml -P pull_secret=$PULL_SECRET $CLUSTER
 
   deploy-osac:
     needs: deploy-cluster

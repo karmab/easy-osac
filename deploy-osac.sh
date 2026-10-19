@@ -35,7 +35,7 @@ helm upgrade --install osac-deps charts/osac-deps -n osac-deps --create-namespac
   --set cnv.enabled=true \
   --set metallb.enabled=false \
   --set lvms.enabled=false \
-  --set mce.enabled=false \
+  --set mce.enabled=true \
   --wait --timeout 20m
 
 # Approve the Kafka install plan (retry until installPlanRef appears)
@@ -104,4 +104,4 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   --set service.internalHostname="fulfillment-internal-api-$NS.$DOMAIN" \
   --set "ui.auth.oidcIssuerURL=https://keycloak-keycloak.$DOMAIN/realms/osac" \
   --set lvms.enabled=false \
-  --wait --timeout 40m
+  --wait --timeout 60m
