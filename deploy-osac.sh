@@ -45,7 +45,11 @@ until INSTALL_PLAN=$(oc get subscription amq-streams -n osac-kafka -o jsonpath='
 done
 oc patch installplan "$INSTALL_PLAN" -n osac-kafka --type merge -p '{"spec":{"approved":true}}'
 
-# Wait for CSV
+# Wait for CSV to appear, then wait for it to succeed
+until oc get csv -n osac-kafka -l operators.coreos.com/amq-streams.osac-kafka -o name 2>/dev/null | grep -q .; do
+  echo "Waiting for Kafka CSV..."
+  sleep 10
+done
 oc wait csv -n osac-kafka -l operators.coreos.com/amq-streams.osac-kafka --for=jsonpath='{.status.phase}'=Succeeded --timeout=300s
 
 # handle ca-bundle
