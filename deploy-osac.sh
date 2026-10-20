@@ -149,6 +149,19 @@ for SCOPE_NAME in profile email; do
 done
 ok "Keycloak osac-ui scopes configured (profile, email)"
 
+echo -e "  ${BOLD}🔑 Resetting demo user passwords to 'admin'...${RESET}"
+OSAC_USERS=$(curl -sk -H "Authorization: Bearer $KC_TOKEN" "$KC_URL/admin/realms/osac/users?max=50")
+echo "$OSAC_USERS" | python3 -c "
+import sys,json
+for u in json.load(sys.stdin):
+    print(u['id'], u['username'])
+" | while read -r UID UNAME; do
+  curl -sk -X PUT -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \
+    "$KC_URL/admin/realms/osac/users/$UID/reset-password" \
+    -d '{"type":"password","value":"admin","temporary":false}'
+done
+ok "All demo user passwords set to 'admin'"
+
 # =====================================================================
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
