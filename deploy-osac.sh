@@ -162,6 +162,87 @@ for u in json.load(sys.stdin):
 done
 ok "All demo user passwords set to 'admin'"
 
+echo -e "  ${BOLD}🏗️  Bootstrapping smoke-test tenant and catalog...${RESET}"
+
+curl -sL "https://github.com/fullstorydev/grpcurl/releases/download/v1.9.3/grpcurl_1.9.3_linux_x86_64.tar.gz" \
+  | tar xz -C /usr/local/bin grpcurl
+curl -sL "https://github.com/osac-project/osac/releases/latest/download/osac_Linux_x86_64" -o /usr/local/bin/osac
+chmod +x /usr/local/bin/osac
+ok "grpcurl and osac CLI installed"
+
+API_URL="fulfillment-api-$NS.$DOMAIN:443"
+osac login "$API_URL" --user=admin --password=admin --insecure --flow=password 2>&1
+
+oc label sc odf-storagecluster-ceph-rbd osac.openshift.io/tenant=Default --overwrite
+ok "StorageClass labeled for tenant use"
+
+oc create namespace smoke-test --dry-run=client -o yaml | oc apply -f -
+
+cat <<'TENANT_EOF' | oc apply -f -
+apiVersion: osac.openshift.io/v1alpha1
+kind: Tenant
+metadata:
+  name: smoke-test
+  namespace: osac
+spec:
+  namespaces:
+    - smoke-test
+TENANT_EOF
+ok "Tenant CR created"
+
+INT_API="fulfillment-internal-api-$NS.$DOMAIN:443"
+SA_TOKEN=$(oc create token admin -n osac --duration=1h --as system:admin)
+
+grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+  -d '{"object":{"metadata":{"name":"smoke-test"}}}' \
+  "$INT_API" osac.private.v1.Tenants/Create 2>&1 || true
+ok "Tenant registered via private API"
+
+BACKEND_ID=$(grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+  -d '{"object":{"metadata":{"name":"odf"},"spec":{"provider":"odf","endpoint":"n/a","credentials":{"username":"n/a","password":"n/a"}}}}' \
+  "$INT_API" osac.private.v1.StorageBackends/Create 2>&1 \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['object']['id'])" 2>/dev/null || echo "")
+if [[ -z "$BACKEND_ID" ]]; then
+  BACKEND_ID=$(grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+    -d '{}' "$INT_API" osac.private.v1.StorageBackends/List 2>&1 \
+    | python3 -c "import sys,json; items=json.load(sys.stdin).get('items',[]); print(next(i['id'] for i in items if i.get('metadata',{}).get('name')=='odf'))")
+fi
+ok "StorageBackend 'odf' ($BACKEND_ID)"
+
+grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+  -d "{\"object\":{\"metadata\":{\"name\":\"default\"},\"spec\":{\"protocol\":\"STORAGE_PROTOCOL_BLOCK\",\"backends\":[{\"backend_id\":\"$BACKEND_ID\"}]}}}" \
+  "$INT_API" osac.private.v1.StorageTiers/Create 2>&1 || true
+ok "StorageTier 'default'"
+
+osac create instancetype --name smoke-2c4g --vcpus 2 --memory-gib 4 --description "Smoke test 2 vCPU 4 GiB" 2>&1 || true
+ok "InstanceType 'smoke-2c4g'"
+
+osac create diskimage --name fedora-41 --source-ref quay.io/containerdisks/fedora:41 --architecture amd64 2>&1 || true
+ok "DiskImage 'fedora-41'"
+
+cat <<'TMPL_EOF' | osac create -f - 2>&1 || true
+"@type": type.googleapis.com/osac.public.v1.ComputeInstanceTemplate
+metadata:
+  name: smoke-fedora
+title: Smoke Fedora
+description: Fedora 41 for smoke tests
+spec_defaults:
+  instance_type:
+    name: smoke-2c4g
+  disk_image:
+    name: fedora-41
+  boot_disk:
+    size_gib: 20
+    storage_tier:
+      name: default
+  run_strategy: COMPUTE_INSTANCE_RUN_STRATEGY_ALWAYS
+TMPL_EOF
+ok "ComputeInstanceTemplate 'smoke-fedora'"
+
+osac create computeinstancecatalogitem -n fedora-41 --title "Fedora 41" --description "Fedora 41 VM" \
+  --template smoke-fedora --published 2>&1 || true
+ok "CatalogItem 'fedora-41' published"
+
 # =====================================================================
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"

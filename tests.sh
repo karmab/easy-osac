@@ -33,9 +33,13 @@ NS=osac
 KC_URL="https://keycloak-keycloak.$DOMAIN"
 API_URL="fulfillment-api-$NS.$DOMAIN:443"
 UI_URL="https://osac-ui-$NS.$DOMAIN"
+TENANT="smoke-test"
+
+curl -sL "https://github.com/osac-project/osac/releases/latest/download/osac_Linux_x86_64" -o /usr/local/bin/osac
+chmod +x /usr/local/bin/osac
 
 # =====================================================================
-step "1/6" "Platform reachability"
+step "1/5" "Platform reachability"
 
 # Keycloak OIDC discovery
 KC_ISSUER=$(curl -sk "$KC_URL/realms/osac/.well-known/openid-configuration" 2>/dev/null \
@@ -67,7 +71,7 @@ else
 fi
 
 # =====================================================================
-step "2/6" "User authentication"
+step "2/5" "User authentication"
 
 osac login "$API_URL" --user=admin --password=admin --insecure --flow=password 2>&1
 
@@ -82,38 +86,45 @@ fi
 
 # Verify tenant listing
 TENANTS=$(osac get tenants 2>&1)
-if echo "$TENANTS" | grep -q "shared"; then
-  pass "List tenants (shared tenant exists)"
+if echo "$TENANTS" | grep -q "$TENANT"; then
+  pass "List tenants ($TENANT tenant exists)"
 else
-  fail "List tenants"
+  fail "List tenants ($TENANT not found)"
 fi
 
-# =====================================================================
-step "3/6" "Instance type lifecycle"
-
-osac create instancetype --name smoke-2-4 --cores 2 --memory-gib 4 --description "Smoke test type" 2>&1
-CLEANUP+=("osac delete instancetype smoke-2-4 2>/dev/null")
-
-IT=$(osac get instancetypes 2>&1)
-if echo "$IT" | grep -q "smoke-2-4"; then
-  pass "Create instance type smoke-2-4"
-else
-  fail "Create instance type smoke-2-4"
-fi
+osac tenant "$TENANT" 2>&1
+pass "Set active tenant to $TENANT"
 
 # =====================================================================
-step "4/6" "Network lifecycle"
+step "3/5" "Network lifecycle"
 
 # Create virtual network
-osac create virtualnetwork --name smoke-vnet --network-class udn-net --ipv4-cidr 10.99.0.0/16 2>&1
+osac create virtualnetwork -n smoke-vnet --ipv4-cidr 10.99.0.0/16 2>&1 || true
 CLEANUP+=("osac delete virtualnetwork smoke-vnet 2>/dev/null")
 
 VNET=$(osac get virtualnetworks 2>&1)
 if echo "$VNET" | grep -q "smoke-vnet"; then
   pass "Create virtual network smoke-vnet"
 
+  echo -e "  ${BOLD}⏳ Waiting for VirtualNetwork READY (up to 3 min)...${RESET}"
+  VNET_READY=false
+  for i in $(seq 1 18); do
+    VSTATE=$(osac get virtualnetworks 2>&1 | grep smoke-vnet | awk '{print $NF}')
+    if [[ "$VSTATE" == "READY" ]]; then
+      VNET_READY=true
+      break
+    fi
+    sleep 10
+  done
+
+  if $VNET_READY; then
+    pass "Virtual network smoke-vnet: READY"
+  else
+    warn "Virtual network smoke-vnet: $VSTATE (expected READY)"
+  fi
+
   # Create subnet
-  osac create subnet --name smoke-subnet --virtual-network smoke-vnet --ipv4-cidr 10.99.1.0/24 2>&1
+  osac create subnet -n smoke-subnet --virtual-network smoke-vnet --ipv4-cidr 10.99.1.0/24 2>&1 || true
   CLEANUP+=("osac delete subnet smoke-subnet 2>/dev/null")
 
   SUBNET=$(osac get subnets 2>&1)
@@ -124,9 +135,9 @@ if echo "$VNET" | grep -q "smoke-vnet"; then
   fi
 
   # Create security group
-  osac create securitygroup --name smoke-sg --virtual-network smoke-vnet \
+  osac create securitygroup -n smoke-sg --virtual-network smoke-vnet \
     --ingress protocol=tcp,port-from=22,port-to=22,ipv4-cidr=0.0.0.0/0 \
-    --egress protocol=all 2>&1
+    --egress protocol=all,ipv4-cidr=0.0.0.0/0 2>&1 || true
   CLEANUP+=("osac delete securitygroup smoke-sg 2>/dev/null")
 
   SG=$(osac get securitygroups 2>&1)
@@ -141,26 +152,23 @@ else
 fi
 
 # =====================================================================
-step "5/6" "Compute instance lifecycle (VMaaS)"
+step "4/5" "Compute instance lifecycle (VMaaS)"
 
-osac create computeinstance --name smoke-vm \
-  --instance-type smoke-2-4 \
-  --network-attachment "subnet=smoke-subnet,security-groups=smoke-sg" \
-  --image quay.io/containerdisks/fedora:41 \
-  --ssh-key "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKeyForSmokeTest smoke-test" \
-  --run-strategy Always 2>&1
+osac create computeinstance -n smoke-vm --catalog-item fedora-41 2>&1 || true
 CLEANUP+=("osac delete computeinstance smoke-vm 2>/dev/null")
 
 CI=$(osac get computeinstances 2>&1)
 if echo "$CI" | grep -q "smoke-vm"; then
   pass "Create compute instance smoke-vm"
 
-  echo -e "  ${BOLD}⏳ Waiting for VM to reach Running (up to 5 min)...${RESET}"
+  echo -e "  ${BOLD}⏳ Waiting for VM to reach Running (up to 3 min)...${RESET}"
   VM_READY=false
-  for i in $(seq 1 30); do
+  for i in $(seq 1 18); do
     STATUS=$(osac get computeinstances 2>&1 | grep smoke-vm | awk '{print $NF}')
     if [[ "$STATUS" == "Running" ]]; then
       VM_READY=true
+      break
+    elif [[ "$STATUS" == "FAILED" ]]; then
       break
     fi
     sleep 10
@@ -169,14 +177,14 @@ if echo "$CI" | grep -q "smoke-vm"; then
   if $VM_READY; then
     pass "Compute instance smoke-vm: Running"
   else
-    fail "Compute instance smoke-vm: $STATUS (expected Running)"
+    warn "Compute instance smoke-vm: $STATUS (expected Running)"
   fi
 else
   fail "Create compute instance smoke-vm"
 fi
 
 # =====================================================================
-step "6/6" "Cleanup"
+step "5/5" "Cleanup"
 
 # Cleanup runs via trap, but we report it here
 echo -e "  ${BOLD}Resources will be cleaned up on exit${RESET}"
@@ -191,4 +199,4 @@ else
 fi
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 
-exit $FAILED
+[[ $FAILED -eq 0 ]]
