@@ -125,6 +125,20 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   --wait --timeout 60m
 ok "osac platform deployed"
 
+echo -e "  ${BOLD}🔑 Patching Keycloak osac-ui client redirect URIs...${RESET}"
+KC_URL="https://keycloak-keycloak.$DOMAIN"
+UI_URL="https://osac-ui-$NS.$DOMAIN"
+KC_TOKEN=$(curl -sk "$KC_URL/realms/master/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=admin-cli&username=admin&password=admin" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+KC_CLIENT_UUID=$(curl -sk -H "Authorization: Bearer $KC_TOKEN" \
+  "$KC_URL/admin/realms/osac/clients?clientId=osac-ui" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
+curl -sk -X PUT -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \
+  "$KC_URL/admin/realms/osac/clients/$KC_CLIENT_UUID" \
+  -d "{\"clientId\":\"osac-ui\",\"redirectUris\":[\"${UI_URL}/*\"],\"webOrigins\":[\"${UI_URL}\"],\"rootUrl\":\"${UI_URL}\"}"
+ok "Keycloak osac-ui redirect set to $UI_URL"
+
 # =====================================================================
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
