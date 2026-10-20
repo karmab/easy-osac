@@ -60,4 +60,4 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - run: git pull origin ${GITHUB_REF##*/}
-    - run: KUBECONFIG=${KUBECONFIG:-/root/.kcli/clusters/$CLUSTER/auth/kubeconfig} MODEL=$MODEL bash tests.sh
+    - run: KUBECONFIG=${KUBECONFIG:-/root/.kcli/clusters/$CLUSTER/auth/kubeconfig} bash tests.sh
