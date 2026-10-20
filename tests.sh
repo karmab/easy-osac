@@ -7,9 +7,9 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 PASSED=0; FAILED=0; WARNED=0
 CLEANUP=()
 
-pass() { echo -e "  ${GREEN}✅ $1${RESET}"; ((PASSED++)); }
-fail() { echo -e "  ${RED}❌ $1${RESET}" >&2; ((FAILED++)); }
-warn() { echo -e "  ${YELLOW}⚠️  $1${RESET}"; ((WARNED++)); }
+pass() { echo -e "  ${GREEN}✅ $1${RESET}"; PASSED=$((PASSED + 1)); }
+fail() { echo -e "  ${RED}❌ $1${RESET}" >&2; FAILED=$((FAILED + 1)); }
+warn() { echo -e "  ${YELLOW}⚠️  $1${RESET}"; WARNED=$((WARNED + 1)); }
 step() {
   echo ""
   echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
