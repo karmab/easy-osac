@@ -122,9 +122,6 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   --set service.internalHostname="fulfillment-internal-api-$NS.$DOMAIN" \
   --set "ui.auth.oidcIssuerURL=https://keycloak-keycloak.$DOMAIN/realms/osac" \
   --set lvms.enabled=false \
-  --set global.services.bmaas.enabled=true \
-  --set bmf.metal3.enabled=true \
-  --set bmf.metal3.namespace=osac-host-inventory \
   --wait --timeout 60m
 ok "osac platform deployed"
 
@@ -245,41 +242,6 @@ ok "ComputeInstanceTemplate 'smoke-fedora'"
 osac create computeinstancecatalogitem -n fedora-41 --title "Fedora 41" --description "Fedora 41 VM" \
   --template smoke-fedora --published 2>&1 || true
 ok "CatalogItem 'fedora-41' published"
-
-echo -e "  ${BOLD}🔩 Registering bare metal host...${RESET}"
-
-oc create namespace osac-host-inventory --dry-run=client -o yaml | oc apply -f -
-
-oc create secret generic myvm-bmc-secret -n osac-host-inventory \
-  --from-literal=username=admin --from-literal=password=password \
-  --dry-run=client -o yaml | oc apply -f -
-
-cat <<'BMH_EOF' | oc apply -f -
-apiVersion: metal3.io/v1alpha1
-kind: BareMetalHost
-metadata:
-  name: myvm
-  namespace: osac-host-inventory
-  labels:
-    osac.openshift.io/host-type: fake
-spec:
-  online: true
-  bootMACAddress: "52:54:00:26:9c:f4"
-  bmc:
-    address: redfish-virtualmedia://192.168.254.1:9000/redfish/v1/Systems/local/myvm
-    credentialsName: myvm-bmc-secret
-    disableCertificateVerification: true
-BMH_EOF
-ok "BareMetalHost 'myvm' registered"
-
-osac create baremetalinstancecatalogitem -n smoke-bm --title "Smoke BM" --description "Fake bare metal" \
-  --template bm-host-provisioning --published 2>&1 || true
-ok "BareMetalInstanceCatalogItem 'smoke-bm' published"
-
-grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
-  -d '{"object":{"metadata":{"name":"smoke-fake"},"spec":{"description":"Fake BM host","hardware":{"cpu":{"cores":16,"architecture":"x86_64","threads_per_core":1},"memory":{"total_gb":32},"network_ports":[{"name":"eth0","role":"fabric","type":"ethernet","speed":"10Gbps"}]},"host_label_selector":{"match_labels":{"osac.openshift.io/host-type":"fake"}}}}}' \
-  "$INT_API" osac.private.v1.BareMetalInstanceTypes/Create 2>&1 || true
-ok "BareMetalInstanceType 'smoke-fake'"
 
 # =====================================================================
 echo ""

@@ -39,7 +39,7 @@ curl -sL "https://github.com/osac-project/osac/releases/latest/download/osac_Lin
 chmod +x /usr/local/bin/osac
 
 # =====================================================================
-step "1/6" "Platform reachability"
+step "1/5" "Platform reachability"
 
 # Keycloak OIDC discovery
 KC_ISSUER=$(curl -sk "$KC_URL/realms/osac/.well-known/openid-configuration" 2>/dev/null \
@@ -71,7 +71,7 @@ else
 fi
 
 # =====================================================================
-step "2/6" "User authentication"
+step "2/5" "User authentication"
 
 osac login "$API_URL" --user=admin --password=admin --insecure --flow=password 2>&1
 
@@ -96,7 +96,7 @@ osac tenant "$TENANT" 2>&1
 pass "Set active tenant to $TENANT"
 
 # =====================================================================
-step "3/6" "Network lifecycle"
+step "3/5" "Network lifecycle"
 
 # Create virtual network
 osac create virtualnetwork -n smoke-vnet --ipv4-cidr 10.99.0.0/16 2>&1 || true
@@ -152,7 +152,7 @@ else
 fi
 
 # =====================================================================
-step "4/6" "Compute instance lifecycle (VMaaS)"
+step "4/5" "Compute instance lifecycle (VMaaS)"
 
 osac create computeinstance -n smoke-vm --catalog-item fedora-41 2>&1 || true
 CLEANUP+=("osac delete computeinstance smoke-vm 2>/dev/null")
@@ -184,31 +184,7 @@ else
 fi
 
 # =====================================================================
-step "5/6" "BMaaS availability"
-
-BM_CATALOGS=$(osac get baremetalinstancecatalogitems 2>&1)
-if echo "$BM_CATALOGS" | grep -q "smoke-bm"; then
-  pass "BMaaS catalog item 'smoke-bm' exists"
-else
-  fail "BMaaS catalog item 'smoke-bm' not found"
-fi
-
-BM_TEMPLATES=$(osac get baremetalinstancetemplates 2>&1)
-if echo "$BM_TEMPLATES" | grep -q "bm-host-provisioning"; then
-  pass "BMaaS template 'bm-host-provisioning' exists"
-else
-  fail "BMaaS template not found"
-fi
-
-BMH_COUNT=$(oc get baremetalhost -n osac-host-inventory --no-headers 2>/dev/null | { grep -c "available" || true; })
-if [[ "$BMH_COUNT" -gt 0 ]]; then
-  pass "BareMetalHost available ($BMH_COUNT hosts)"
-else
-  warn "No BareMetalHost in 'available' state"
-fi
-
-# =====================================================================
-step "6/6" "Cleanup"
+step "5/5" "Cleanup"
 
 # Cleanup runs via trap, but we report it here
 echo -e "  ${BOLD}Resources will be cleaned up on exit${RESET}"
