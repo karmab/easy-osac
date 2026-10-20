@@ -2,31 +2,47 @@
 
 set -euo pipefail
 
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+ok()   { echo -e "  ${GREEN}✅ $1${RESET}"; }
+fail() { echo -e "  ${RED}❌ $1${RESET}" >&2; }
+warn() { echo -e "  ${YELLOW}⚠️  $1${RESET}"; }
+step() {
+  echo ""
+  echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  echo -e "  🔧 ${BOLD}[$1] $2${RESET}"
+  echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+}
 
 export DOMAIN=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')
 export NS=osac
+
+# =====================================================================
+step "1/5" "Pre-requisites (CRDs, repos, chart deps)"
+
 git clone https://github.com/osac-project/osac.git
 cd osac/osac-installer
 
-# Step 1 -- Pre-requisites (CRDs and repos)
-# Helm repos needed for dependency build
 helm repo add topolvm https://topolvm.github.io/topolvm --force-update
 helm repo add jetstack https://charts.jetstack.io --force-update
+ok "Helm repos added"
 
-# Trust-manager CRD (cert-manager operator doesn't ship it)
 helm template trust-manager jetstack/trust-manager --version v0.20.0 \
   --show-only templates/crd-trust.cert-manager.io_bundles.yaml | oc apply -f -
+ok "trust-manager CRD installed"
 
-# Topolvm CRD (osac-operator binary requires it even if you don't use LVMS)
 helm template topolvm topolvm/topolvm \
   --show-only templates/crds/topolvm.io_logicalvolumes.yaml | oc apply -f -
+ok "topolvm CRD installed"
 
-# Build chart dependencies
 helm dependency build charts/osac-deps
 helm dependency build charts/osac-infra
 helm dependency build charts/osac
+ok "Chart dependencies built"
 
-# Step 2 -- Phase 1a: osac-deps (installs operators in the right namespaces)
+# =====================================================================
+step "2/5" "Phase 1a: osac-deps (operators)"
+
 helm upgrade --install osac-deps charts/osac-deps -n osac-deps --create-namespace \
   --set certManager.enabled=true \
   --set aapOperator.enabled=true \
@@ -37,22 +53,25 @@ helm upgrade --install osac-deps charts/osac-deps -n osac-deps --create-namespac
   --set lvms.enabled=false \
   --set mce.enabled=true \
   --wait --timeout 20m
+ok "osac-deps installed"
 
-# Approve the Kafka install plan (retry until installPlanRef appears)
+echo -e "  ${BOLD}⏳ Waiting for Kafka install plan...${RESET}"
 until INSTALL_PLAN=$(oc get subscription amq-streams -n osac-kafka -o jsonpath='{.status.installPlanRef.name}' 2>/dev/null) && [[ -n "$INSTALL_PLAN" ]]; do
-  echo "Waiting for Kafka install plan..."
   sleep 10
 done
 oc patch installplan "$INSTALL_PLAN" -n osac-kafka --type merge -p '{"spec":{"approved":true}}'
+ok "Kafka install plan approved ($INSTALL_PLAN)"
 
-# Wait for CSV to appear, then wait for it to succeed
+echo -e "  ${BOLD}⏳ Waiting for Kafka CSV...${RESET}"
 until oc get csv -n osac-kafka -l operators.coreos.com/amq-streams.osac-kafka -o name 2>/dev/null | grep -q .; do
-  echo "Waiting for Kafka CSV..."
   sleep 10
 done
 oc wait csv -n osac-kafka -l operators.coreos.com/amq-streams.osac-kafka --for=jsonpath='{.status.phase}'=Succeeded --timeout=300s
+ok "Kafka operator ready"
 
-# Step 3 -- Phase 1b: osac-infra (no --wait so the post-install ca-bundle hook can run immediately)
+# =====================================================================
+step "3/5" "Phase 1b: osac-infra (trust, keycloak, vault, postgres, kafka)"
+
 helm upgrade --install osac-infra charts/osac-infra -n osac-infra --create-namespace \
   --set certManager.enabled=true \
   --set trustManager.enabled=true \
@@ -71,23 +90,31 @@ helm upgrade --install osac-infra charts/osac-infra -n osac-infra --create-names
   --set bundledVault.enabled=true \
   --set "bundledVault.keycloakIssuerUrl=https://keycloak-keycloak.$DOMAIN/realms/osac" \
   --timeout 30m
+ok "osac-infra helm release submitted"
 
-# Wait for osac-infra components to be ready before proceeding
+echo -e "  ${BOLD}⏳ Waiting for infra components...${RESET}"
 oc wait deployment openbao -n osac-infra --for=condition=Available --timeout=600s
+ok "OpenBao ready"
 oc wait deployment postgres -n osac-infra --for=condition=Available --timeout=600s
+ok "PostgreSQL ready"
 until oc get route keycloak -n keycloak -o name 2>/dev/null | grep -q .; do
-  echo "Waiting for Keycloak route..."
   sleep 10
 done
+ok "Keycloak route available"
 
-# Step 4 -- Prepare the AAP manifest
+# =====================================================================
+step "4/5" "AAP manifest"
+
 oc create namespace "$NS" --dry-run=client -o yaml | oc apply -f -
 oc create secret generic config-as-code-manifest-ig \
   --from-file=license.zip=/root/manifest.zip \
   -n "$NS" --dry-run=client -o yaml | oc apply --server-side -f -
 oc label secret config-as-code-manifest-ig osac.openshift.io/project=osac-aap -n "$NS" --overwrite
+ok "AAP manifest configured in namespace $NS"
 
-# Step 5 -- Phase 2: osac
+# =====================================================================
+step "5/5" "Phase 2: osac platform"
+
 helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   -f values/vmaas-ci/instance.yaml \
   --set global.clusterDomain="$DOMAIN" \
@@ -96,3 +123,15 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   --set "ui.auth.oidcIssuerURL=https://keycloak-keycloak.$DOMAIN/realms/osac" \
   --set lvms.enabled=false \
   --wait --timeout 60m
+ok "osac platform deployed"
+
+# =====================================================================
+echo ""
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo -e "  ${GREEN}${BOLD}🎉 OSAC deployment complete${RESET}"
+echo ""
+echo -e "  ${BOLD}Domain:${RESET}    $DOMAIN"
+echo -e "  ${BOLD}Keycloak:${RESET}  https://keycloak-keycloak.$DOMAIN"
+echo -e "  ${BOLD}API:${RESET}       https://fulfillment-api-$NS.$DOMAIN"
+echo -e "  ${BOLD}UI:${RESET}        https://osac-ui-$NS.$DOMAIN"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
