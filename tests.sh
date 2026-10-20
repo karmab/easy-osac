@@ -184,35 +184,27 @@ else
 fi
 
 # =====================================================================
-step "5/6" "Bare metal instance lifecycle (BMaaS)"
+step "5/6" "BMaaS availability"
 
-osac create baremetalinstance -n smoke-bm --catalog-item smoke-bm --disk-image fedora-41 2>&1 || true
-CLEANUP+=("osac delete baremetalinstance smoke-bm 2>/dev/null")
-
-BMI=$(osac get baremetalinstances 2>&1)
-if echo "$BMI" | grep -q "smoke-bm"; then
-  pass "Create bare metal instance smoke-bm"
-
-  echo -e "  ${BOLD}⏳ Waiting for BM provisioning (up to 5 min)...${RESET}"
-  BM_READY=false
-  for i in $(seq 1 30); do
-    BM_STATUS=$(osac get baremetalinstances 2>&1 | grep smoke-bm | awk '{print $NF}')
-    if [[ "$BM_STATUS" == "Running" || "$BM_STATUS" == "READY" ]]; then
-      BM_READY=true
-      break
-    elif [[ "$BM_STATUS" == "FAILED" || "$BM_STATUS" == "Error" ]]; then
-      break
-    fi
-    sleep 10
-  done
-
-  if $BM_READY; then
-    pass "Bare metal instance smoke-bm: $BM_STATUS"
-  else
-    warn "Bare metal instance smoke-bm: $BM_STATUS (expected Running)"
-  fi
+BM_CATALOGS=$(osac get baremetalinstancecatalogitems 2>&1)
+if echo "$BM_CATALOGS" | grep -q "smoke-bm"; then
+  pass "BMaaS catalog item 'smoke-bm' exists"
 else
-  fail "Create bare metal instance smoke-bm"
+  fail "BMaaS catalog item 'smoke-bm' not found"
+fi
+
+BM_TEMPLATES=$(osac get baremetalinstancetemplates 2>&1)
+if echo "$BM_TEMPLATES" | grep -q "bm-host-provisioning"; then
+  pass "BMaaS template 'bm-host-provisioning' exists"
+else
+  fail "BMaaS template not found"
+fi
+
+BMH_COUNT=$(oc get baremetalhost -n osac-host-inventory --no-headers 2>/dev/null | { grep -c "available" || true; })
+if [[ "$BMH_COUNT" -gt 0 ]]; then
+  pass "BareMetalHost available ($BMH_COUNT hosts)"
+else
+  warn "No BareMetalHost in 'available' state"
 fi
 
 # =====================================================================

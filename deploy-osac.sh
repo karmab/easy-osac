@@ -122,6 +122,7 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   --set service.internalHostname="fulfillment-internal-api-$NS.$DOMAIN" \
   --set "ui.auth.oidcIssuerURL=https://keycloak-keycloak.$DOMAIN/realms/osac" \
   --set lvms.enabled=false \
+  --set global.services.bmaas.enabled=true \
   --set bmf.metal3.enabled=true \
   --set bmf.metal3.namespace=osac-host-inventory \
   --wait --timeout 60m
@@ -271,18 +272,14 @@ spec:
 BMH_EOF
 ok "BareMetalHost 'myvm' registered"
 
-cat <<'BMTMPL_EOF' | osac create -f - 2>&1 || true
-"@type": type.googleapis.com/osac.public.v1.BareMetalInstanceTemplate
-metadata:
-  name: smoke-bm
-title: Smoke BM
-description: Bare metal template for smoke tests
-BMTMPL_EOF
-ok "BareMetalInstanceTemplate 'smoke-bm'"
-
 osac create baremetalinstancecatalogitem -n smoke-bm --title "Smoke BM" --description "Fake bare metal" \
-  --template smoke-bm --published 2>&1 || true
+  --template bm-host-provisioning --published 2>&1 || true
 ok "BareMetalInstanceCatalogItem 'smoke-bm' published"
+
+grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+  -d '{"object":{"metadata":{"name":"smoke-fake"},"spec":{"description":"Fake BM host","hardware":{"cpu":{"cores":16,"architecture":"x86_64","threads_per_core":1},"memory":{"total_gb":32},"network_ports":[{"name":"eth0","role":"fabric","type":"ethernet","speed":"10Gbps"}]},"host_label_selector":{"match_labels":{"osac.openshift.io/host-type":"fake"}}}}}' \
+  "$INT_API" osac.private.v1.BareMetalInstanceTypes/Create 2>&1 || true
+ok "BareMetalInstanceType 'smoke-fake'"
 
 # =====================================================================
 echo ""
