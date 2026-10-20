@@ -139,6 +139,16 @@ curl -sk -X PUT -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: applicati
   -d "{\"clientId\":\"osac-ui\",\"redirectUris\":[\"${UI_URL}/*\"],\"webOrigins\":[\"${UI_URL}\"],\"rootUrl\":\"${UI_URL}\"}"
 ok "Keycloak osac-ui redirect set to $UI_URL"
 
+echo -e "  ${BOLD}🔑 Adding profile and email scopes to osac-ui client...${RESET}"
+for SCOPE_NAME in profile email; do
+  SCOPE_ID=$(curl -sk -H "Authorization: Bearer $KC_TOKEN" \
+    "$KC_URL/admin/realms/osac/client-scopes" \
+    | python3 -c "import sys,json; print([s['id'] for s in json.load(sys.stdin) if s['name']=='$SCOPE_NAME'][0])")
+  curl -sk -X PUT -H "Authorization: Bearer $KC_TOKEN" \
+    "$KC_URL/admin/realms/osac/clients/$KC_CLIENT_UUID/default-client-scopes/$SCOPE_ID"
+done
+ok "Keycloak osac-ui scopes configured (profile, email)"
+
 # =====================================================================
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
