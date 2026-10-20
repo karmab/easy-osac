@@ -155,9 +155,9 @@ echo "$OSAC_USERS" | python3 -c "
 import sys,json
 for u in json.load(sys.stdin):
     print(u['id'], u['username'])
-" | while read -r UID UNAME; do
+" | while read -r USER_ID UNAME; do
   curl -sk -X PUT -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \
-    "$KC_URL/admin/realms/osac/users/$UID/reset-password" \
+    "$KC_URL/admin/realms/osac/users/$USER_ID/reset-password" \
     -d '{"type":"password","value":"admin","temporary":false}'
 done
 ok "All demo user passwords set to 'admin'"
