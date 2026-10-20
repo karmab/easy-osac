@@ -52,28 +52,7 @@ until oc get csv -n osac-kafka -l operators.coreos.com/amq-streams.osac-kafka -o
 done
 oc wait csv -n osac-kafka -l operators.coreos.com/amq-streams.osac-kafka --for=jsonpath='{.status.phase}'=Succeeded --timeout=300s
 
-# handle ca-bundle
-oc apply -f - <<'EOF'
-apiVersion: trust.cert-manager.io/v1alpha1
-kind: Bundle
-metadata:
-  name: ca-bundle
-spec:
-  sources:
-  - secret:
-      name: "default-ca"
-      key: "ca.crt"
-  target:
-    configMap:
-      key: bundle.pem
-    namespaceSelector:
-      matchExpressions:
-      - key: kubernetes.io/metadata.name
-        operator: In
-        values: ["osac-infra","osac","keycloak","osac-kafka"]
-EOF
-
-# Step 3 -- Phase 1b: osac-infra
+# Step 3 -- Phase 1b: osac-infra (no --wait so the post-install ca-bundle hook can run immediately)
 helm upgrade --install osac-infra charts/osac-infra -n osac-infra --create-namespace \
   --set certManager.enabled=true \
   --set trustManager.enabled=true \
@@ -91,7 +70,15 @@ helm upgrade --install osac-infra charts/osac-infra -n osac-infra --create-names
   --set bundledPostgres.enabled=true \
   --set bundledVault.enabled=true \
   --set "bundledVault.keycloakIssuerUrl=https://keycloak-keycloak.$DOMAIN/realms/osac" \
-  --wait --timeout 30m
+  --timeout 30m
+
+# Wait for osac-infra components to be ready before proceeding
+oc wait deployment openbao -n osac-infra --for=condition=Available --timeout=600s
+oc wait deployment postgres -n osac-infra --for=condition=Available --timeout=600s
+until oc get route keycloak -n keycloak -o name 2>/dev/null | grep -q .; do
+  echo "Waiting for Keycloak route..."
+  sleep 10
+done
 
 # Step 4 -- Prepare the AAP manifest
 oc create namespace "$NS" --dry-run=client -o yaml | oc apply -f -
