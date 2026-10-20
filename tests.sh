@@ -57,7 +57,7 @@ fi
 # No pods in CrashLoopBackOff
 CRASH_TOTAL=0
 for CHECK_NS in osac-infra keycloak "$NS"; do
-  CRASH=$(oc get pods -n "$CHECK_NS" --no-headers 2>/dev/null | grep -c "CrashLoopBackOff" || echo 0)
+  CRASH=$(oc get pods -n "$CHECK_NS" --no-headers 2>/dev/null | { grep -c "CrashLoopBackOff" || true; })
   CRASH_TOTAL=$((CRASH_TOTAL + CRASH))
 done
 if [[ "$CRASH_TOTAL" -eq 0 ]]; then
