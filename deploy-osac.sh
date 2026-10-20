@@ -214,6 +214,8 @@ grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   "$INT_API" osac.private.v1.StorageTiers/Create 2>&1 || true
 ok "StorageTier 'default'"
 
+osac tenant smoke-test 2>&1
+
 osac create instancetype --name smoke-2c4g --vcpus 2 --memory-gib 4 --description "Smoke test 2 vCPU 4 GiB" 2>&1 || true
 ok "InstanceType 'smoke-2c4g'"
 
