@@ -122,6 +122,8 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   --set service.internalHostname="fulfillment-internal-api-$NS.$DOMAIN" \
   --set "ui.auth.oidcIssuerURL=https://keycloak-keycloak.$DOMAIN/realms/osac" \
   --set lvms.enabled=false \
+  --set bmf.metal3.enabled=true \
+  --set bmf.metal3.namespace=osac-host-inventory \
   --wait --timeout 60m
 ok "osac platform deployed"
 
@@ -242,6 +244,45 @@ ok "ComputeInstanceTemplate 'smoke-fedora'"
 osac create computeinstancecatalogitem -n fedora-41 --title "Fedora 41" --description "Fedora 41 VM" \
   --template smoke-fedora --published 2>&1 || true
 ok "CatalogItem 'fedora-41' published"
+
+echo -e "  ${BOLD}🔩 Registering bare metal host...${RESET}"
+
+oc create namespace osac-host-inventory --dry-run=client -o yaml | oc apply -f -
+
+oc create secret generic myvm-bmc-secret -n osac-host-inventory \
+  --from-literal=username=admin --from-literal=password=password \
+  --dry-run=client -o yaml | oc apply -f -
+
+cat <<'BMH_EOF' | oc apply -f -
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: myvm
+  namespace: osac-host-inventory
+  labels:
+    osac.openshift.io/host-type: fake
+spec:
+  online: true
+  bootMACAddress: "52:54:00:26:9c:f4"
+  bmc:
+    address: redfish-virtualmedia://192.168.254.1:9000/redfish/v1/Systems/local/myvm
+    credentialsName: myvm-bmc-secret
+    disableCertificateVerification: true
+BMH_EOF
+ok "BareMetalHost 'myvm' registered"
+
+cat <<'BMTMPL_EOF' | osac create -f - 2>&1 || true
+"@type": type.googleapis.com/osac.public.v1.BareMetalInstanceTemplate
+metadata:
+  name: smoke-bm
+title: Smoke BM
+description: Bare metal template for smoke tests
+BMTMPL_EOF
+ok "BareMetalInstanceTemplate 'smoke-bm'"
+
+osac create baremetalinstancecatalogitem -n smoke-bm --title "Smoke BM" --description "Fake bare metal" \
+  --template smoke-bm --published 2>&1 || true
+ok "BareMetalInstanceCatalogItem 'smoke-bm' published"
 
 # =====================================================================
 echo ""

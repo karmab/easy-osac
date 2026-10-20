@@ -39,7 +39,7 @@ curl -sL "https://github.com/osac-project/osac/releases/latest/download/osac_Lin
 chmod +x /usr/local/bin/osac
 
 # =====================================================================
-step "1/5" "Platform reachability"
+step "1/6" "Platform reachability"
 
 # Keycloak OIDC discovery
 KC_ISSUER=$(curl -sk "$KC_URL/realms/osac/.well-known/openid-configuration" 2>/dev/null \
@@ -71,7 +71,7 @@ else
 fi
 
 # =====================================================================
-step "2/5" "User authentication"
+step "2/6" "User authentication"
 
 osac login "$API_URL" --user=admin --password=admin --insecure --flow=password 2>&1
 
@@ -96,7 +96,7 @@ osac tenant "$TENANT" 2>&1
 pass "Set active tenant to $TENANT"
 
 # =====================================================================
-step "3/5" "Network lifecycle"
+step "3/6" "Network lifecycle"
 
 # Create virtual network
 osac create virtualnetwork -n smoke-vnet --ipv4-cidr 10.99.0.0/16 2>&1 || true
@@ -152,7 +152,7 @@ else
 fi
 
 # =====================================================================
-step "4/5" "Compute instance lifecycle (VMaaS)"
+step "4/6" "Compute instance lifecycle (VMaaS)"
 
 osac create computeinstance -n smoke-vm --catalog-item fedora-41 2>&1 || true
 CLEANUP+=("osac delete computeinstance smoke-vm 2>/dev/null")
@@ -184,7 +184,39 @@ else
 fi
 
 # =====================================================================
-step "5/5" "Cleanup"
+step "5/6" "Bare metal instance lifecycle (BMaaS)"
+
+osac create baremetalinstance -n smoke-bm --catalog-item smoke-bm --disk-image fedora-41 2>&1 || true
+CLEANUP+=("osac delete baremetalinstance smoke-bm 2>/dev/null")
+
+BMI=$(osac get baremetalinstances 2>&1)
+if echo "$BMI" | grep -q "smoke-bm"; then
+  pass "Create bare metal instance smoke-bm"
+
+  echo -e "  ${BOLD}⏳ Waiting for BM provisioning (up to 5 min)...${RESET}"
+  BM_READY=false
+  for i in $(seq 1 30); do
+    BM_STATUS=$(osac get baremetalinstances 2>&1 | grep smoke-bm | awk '{print $NF}')
+    if [[ "$BM_STATUS" == "Running" || "$BM_STATUS" == "READY" ]]; then
+      BM_READY=true
+      break
+    elif [[ "$BM_STATUS" == "FAILED" || "$BM_STATUS" == "Error" ]]; then
+      break
+    fi
+    sleep 10
+  done
+
+  if $BM_READY; then
+    pass "Bare metal instance smoke-bm: $BM_STATUS"
+  else
+    warn "Bare metal instance smoke-bm: $BM_STATUS (expected Running)"
+  fi
+else
+  fail "Create bare metal instance smoke-bm"
+fi
+
+# =====================================================================
+step "6/6" "Cleanup"
 
 # Cleanup runs via trap, but we report it here
 echo -e "  ${BOLD}Resources will be cleaned up on exit${RESET}"
