@@ -214,9 +214,9 @@ grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   "$INT_API" osac.private.v1.StorageTiers/Create 2>&1 || true
 ok "StorageTier 'default'"
 
-osac tenant smoke-test 2>&1
-
-osac create instancetype --name smoke-2c4g --vcpus 2 --memory-gib 4 --description "Smoke test 2 vCPU 4 GiB" 2>&1 || true
+grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+  -d '{"object":{"metadata":{"name":"smoke-2c4g"},"spec":{"vcpus":2,"memory_gib":4,"description":"Smoke test 2 vCPU 4 GiB","state":"INSTANCE_TYPE_STATE_ACTIVE"}}}' \
+  "$INT_API" osac.private.v1.InstanceTypes/Create 2>&1 || true
 ok "InstanceType 'smoke-2c4g'"
 
 osac create diskimage --name fedora-41 --source-ref quay.io/containerdisks/fedora:41 --architecture amd64 2>&1 || true
