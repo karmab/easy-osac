@@ -20,8 +20,12 @@ export NS=osac
 # =====================================================================
 step "1/7" "Pre-requisites (CRDs, repos, chart deps)"
 
-git clone https://github.com/osac-project/osac.git
-cd osac/osac-installer
+if [[ -d osac ]]; then
+  cd osac && git pull && cd osac-installer
+else
+  git clone https://github.com/osac-project/osac.git
+  cd osac/osac-installer
+fi
 
 helm repo add topolvm https://topolvm.github.io/topolvm --force-update
 helm repo add jetstack https://charts.jetstack.io --force-update
