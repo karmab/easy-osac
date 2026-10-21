@@ -39,7 +39,7 @@ curl -sL "https://github.com/osac-project/osac/releases/latest/download/osac_Lin
 chmod +x /usr/local/bin/osac
 
 # =====================================================================
-step "1/5" "Platform reachability"
+step "1/6" "Platform reachability"
 
 # Keycloak OIDC discovery
 KC_ISSUER=$(curl -sk "$KC_URL/realms/osac/.well-known/openid-configuration" 2>/dev/null \
@@ -71,7 +71,7 @@ else
 fi
 
 # =====================================================================
-step "2/5" "User authentication"
+step "2/6" "User authentication"
 
 osac login "$API_URL" --user=admin --password=admin --insecure --flow=password 2>&1
 
@@ -96,7 +96,7 @@ osac tenant "$TENANT" 2>&1
 pass "Set active tenant to $TENANT"
 
 # =====================================================================
-step "3/5" "Network lifecycle"
+step "3/6" "Network lifecycle"
 
 # Create virtual network
 osac create virtualnetwork -n smoke-vnet --ipv4-cidr 10.99.0.0/16 2>&1 || true
@@ -152,7 +152,7 @@ else
 fi
 
 # =====================================================================
-step "4/5" "Compute instance lifecycle (VMaaS)"
+step "4/6" "Compute instance lifecycle (VMaaS)"
 
 osac create computeinstance -n smoke-vm --catalog-item fedora-41 2>&1 || true
 CLEANUP+=("osac delete computeinstance smoke-vm 2>/dev/null")
@@ -184,7 +184,70 @@ else
 fi
 
 # =====================================================================
-step "5/5" "Cleanup"
+step "5/6" "CaaS cluster lifecycle"
+
+CAAS_ENABLED=$(osac get clusterversions 2>&1 || echo "")
+if echo "$CAAS_ENABLED" | grep -q "4.17.0\|4-17-0"; then
+  pass "CaaS service enabled (ClusterVersion 4.17.0)"
+
+  AGENT_COUNT=$(oc get agents -n hardware-inventory --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$AGENT_COUNT" -ge 2 ]]; then
+    pass "Worker agents available ($AGENT_COUNT)"
+
+    SSH_KEY=$(cat /root/.ssh/id_rsa.pub 2>/dev/null || echo "")
+
+    osac create cluster -n smoke-cluster \
+      --template ocp_ci_small \
+      --node-set name=workers,size=2,baremetal-instance-type=ci-worker-bm \
+      --template-parameter-file pull_secret=/root/openshift_pull.json \
+      ${SSH_KEY:+-p "ssh_public_key=$SSH_KEY"} \
+      2>&1 || true
+    CLEANUP+=("osac delete cluster smoke-cluster --force 2>/dev/null")
+
+    CO=$(osac get clusters 2>&1)
+    if echo "$CO" | grep -q "smoke-cluster"; then
+      pass "Create cluster order smoke-cluster"
+
+      echo -e "  ${BOLD}⏳ Waiting for cluster provisioning to start (up to 5 min)...${RESET}"
+      PROVISION_STARTED=false
+      for i in $(seq 1 30); do
+        CO_STATUS=$(osac get clusters 2>&1 | grep smoke-cluster | awk '{print $NF}')
+        if [[ "$CO_STATUS" == "Provisioning" || "$CO_STATUS" == "PROVISIONING" ]]; then
+          PROVISION_STARTED=true
+          break
+        elif [[ "$CO_STATUS" == "Ready" || "$CO_STATUS" == "READY" ]]; then
+          PROVISION_STARTED=true
+          break
+        elif [[ "$CO_STATUS" == "FAILED" || "$CO_STATUS" == "Failed" ]]; then
+          break
+        fi
+        sleep 10
+      done
+
+      if $PROVISION_STARTED; then
+        pass "Cluster order smoke-cluster: $CO_STATUS"
+      else
+        warn "Cluster order smoke-cluster: $CO_STATUS (expected Provisioning)"
+      fi
+
+      HC=$(oc get hostedclusters -A --no-headers 2>/dev/null | grep smoke-cluster || echo "")
+      if [[ -n "$HC" ]]; then
+        pass "HostedCluster created for smoke-cluster"
+      else
+        warn "HostedCluster not yet created for smoke-cluster"
+      fi
+    else
+      fail "Create cluster order smoke-cluster"
+    fi
+  else
+    warn "Not enough agents ($AGENT_COUNT < 2), skipping CaaS cluster creation"
+  fi
+else
+  warn "CaaS service not enabled, skipping cluster tests"
+fi
+
+# =====================================================================
+step "6/6" "Cleanup"
 
 # Cleanup runs via trap, but we report it here
 echo -e "  ${BOLD}Resources will be cleaned up on exit${RESET}"

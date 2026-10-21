@@ -18,7 +18,7 @@ export DOMAIN=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')
 export NS=osac
 
 # =====================================================================
-step "1/5" "Pre-requisites (CRDs, repos, chart deps)"
+step "1/7" "Pre-requisites (CRDs, repos, chart deps)"
 
 git clone https://github.com/osac-project/osac.git
 cd osac/osac-installer
@@ -41,7 +41,7 @@ helm dependency build charts/osac
 ok "Chart dependencies built"
 
 # =====================================================================
-step "2/5" "Phase 1a: osac-deps (operators)"
+step "2/7" "Phase 1a: osac-deps (operators)"
 
 helm upgrade --install osac-deps charts/osac-deps -n osac-deps --create-namespace \
   --set certManager.enabled=true \
@@ -70,7 +70,7 @@ oc wait csv -n osac-kafka -l operators.coreos.com/amq-streams.osac-kafka --for=j
 ok "Kafka operator ready"
 
 # =====================================================================
-step "3/5" "Phase 1b: osac-infra (trust, keycloak, vault, postgres, kafka)"
+step "3/7" "Phase 1b: osac-infra (trust, keycloak, vault, postgres, kafka, MCE)"
 
 helm upgrade --install osac-infra charts/osac-infra -n osac-infra --create-namespace \
   --set certManager.enabled=true \
@@ -84,7 +84,7 @@ helm upgrade --install osac-infra charts/osac-infra -n osac-infra --create-names
   --set cnv.enabled=true \
   --set lvms.enabled=false \
   --set metallb.enabled=false \
-  --set mce.enabled=false \
+  --set mce.enabled=true \
   --set kafka.enabled=true \
   --set bundledPostgres.enabled=true \
   --set bundledVault.enabled=true \
@@ -102,8 +102,18 @@ until oc get route keycloak -n keycloak -o name 2>/dev/null | grep -q .; do
 done
 ok "Keycloak route available"
 
+echo -e "  ${BOLD}⏳ Waiting for MCE to be Available...${RESET}"
+until [[ "$(oc get multiclusterengine multiclusterengine -n multicluster-engine -o jsonpath='{.status.phase}' 2>/dev/null)" == "Available" ]]; do
+  sleep 15
+done
+ok "MCE Available"
+
+echo -e "  ${BOLD}⏳ Waiting for assisted-service...${RESET}"
+oc wait deployment assisted-service -n multicluster-engine --for=condition=Available --timeout=600s
+ok "assisted-service ready"
+
 # =====================================================================
-step "4/5" "AAP manifest"
+step "4/7" "AAP manifest"
 
 oc create namespace "$NS" --dry-run=client -o yaml | oc apply -f -
 oc create secret generic config-as-code-manifest-ig \
@@ -113,7 +123,7 @@ oc label secret config-as-code-manifest-ig osac.openshift.io/project=osac-aap -n
 ok "AAP manifest configured in namespace $NS"
 
 # =====================================================================
-step "5/5" "Phase 2: osac platform"
+step "5/7" "Phase 2: osac platform"
 
 helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   -f values/vmaas-ci/instance.yaml \
@@ -122,6 +132,11 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   --set service.internalHostname="fulfillment-internal-api-$NS.$DOMAIN" \
   --set "ui.auth.oidcIssuerURL=https://keycloak-keycloak.$DOMAIN/realms/osac" \
   --set lvms.enabled=false \
+  --set global.services.caas.enabled=true \
+  --set clusterVersions.enabled=true \
+  --set "clusterVersions.versions[0].version=4.17.0" \
+  --set "clusterVersions.versions[0].image=quay.io/openshift-release-dev/ocp-release:4.17.0-multi" \
+  --set "clusterVersions.versions[0].default=true" \
   --wait --timeout 60m
 ok "osac platform deployed"
 
@@ -162,7 +177,7 @@ for u in json.load(sys.stdin):
 done
 ok "All demo user passwords set to 'admin'"
 
-echo -e "  ${BOLD}🏗️  Bootstrapping smoke-test tenant and catalog...${RESET}"
+step "6/7" "Bootstrapping smoke-test tenant and catalog"
 
 curl -sL "https://github.com/fullstorydev/grpcurl/releases/download/v1.9.3/grpcurl_1.9.3_linux_x86_64.tar.gz" \
   | tar xz -C /usr/local/bin grpcurl
@@ -244,6 +259,92 @@ ok "ComputeInstanceTemplate 'smoke-fedora'"
 osac create computeinstancecatalogitem -n fedora-41 --title "Fedora 41" --description "Fedora 41 VM" \
   --template smoke-fedora --published 2>&1 || true
 ok "CatalogItem 'fedora-41' published"
+
+# =====================================================================
+step "7/7" "CaaS: InfraEnv + worker agents"
+
+oc create namespace hardware-inventory --dry-run=client -o yaml | oc apply -f -
+ok "hardware-inventory namespace"
+
+PULL_SECRET_DATA=$(cat /root/openshift_pull.json | base64 -w0)
+cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: caas-pull-secret
+  namespace: hardware-inventory
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: $PULL_SECRET_DATA
+EOF
+ok "Pull secret in hardware-inventory"
+
+cat <<'INFRAENV_EOF' | oc apply -f -
+apiVersion: agent-install.openshift.io/v1beta1
+kind: InfraEnv
+metadata:
+  name: smoke-infraenv
+  namespace: hardware-inventory
+spec:
+  pullSecretRef:
+    name: caas-pull-secret
+INFRAENV_EOF
+ok "InfraEnv 'smoke-infraenv' created"
+
+echo -e "  ${BOLD}⏳ Waiting for discovery ISO URL (up to 5 min)...${RESET}"
+ISO_URL=""
+for i in $(seq 1 30); do
+  ISO_URL=$(oc get infraenv smoke-infraenv -n hardware-inventory -o jsonpath='{.status.isoDownloadURL}' 2>/dev/null || echo "")
+  if [[ -n "$ISO_URL" ]]; then
+    break
+  fi
+  sleep 10
+done
+
+if [[ -z "$ISO_URL" ]]; then
+  warn "InfraEnv ISO URL not available, skipping CaaS agent provisioning"
+else
+  ok "Discovery ISO: ${ISO_URL:0:80}..."
+
+  echo -e "  ${BOLD}📥 Downloading discovery ISO...${RESET}"
+  curl -skL "$ISO_URL" -o /tmp/discovery.iso
+  ok "Discovery ISO downloaded"
+
+  echo -e "  ${BOLD}🖥️  Creating worker VMs...${RESET}"
+  for WORKER_IDX in 1 2; do
+    kcli create vm \
+      -P numcpus=8 -P memory=16384 -P disks='[100]' \
+      -P nets="[{\"name\":\"baremetalfake\"}]" \
+      -P iso=/tmp/discovery.iso \
+      -P start=true \
+      "smoke-worker-${WORKER_IDX}" 2>&1 || true
+  done
+  ok "Worker VMs created (smoke-worker-1, smoke-worker-2)"
+
+  echo -e "  ${BOLD}⏳ Waiting for agents to register (up to 10 min)...${RESET}"
+  AGENTS_READY=false
+  for i in $(seq 1 60); do
+    AGENT_COUNT=$(oc get agents -n hardware-inventory --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$AGENT_COUNT" -ge 2 ]]; then
+      AGENTS_READY=true
+      break
+    fi
+    sleep 10
+  done
+
+  if $AGENTS_READY; then
+    ok "$AGENT_COUNT agents registered"
+
+    echo -e "  ${BOLD}✅ Approving agents...${RESET}"
+    for AGENT_NAME in $(oc get agents -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name); do
+      oc patch agent "$AGENT_NAME" -n hardware-inventory --type merge \
+        -p '{"spec":{"approved":true}}' 2>/dev/null || true
+    done
+    ok "All agents approved"
+  else
+    warn "Only $AGENT_COUNT agents registered (expected 2)"
+  fi
+fi
 
 # =====================================================================
 echo ""
