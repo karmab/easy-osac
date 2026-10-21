@@ -261,30 +261,26 @@ osac create computeinstancecatalogitem -n fedora-41 --title "Fedora 41" --descri
 ok "CatalogItem 'fedora-41' published"
 
 # =====================================================================
-step "7/7" "CaaS: InfraEnv + worker agents"
+step "7/7" "CaaS: InfraEnv + BMH agents"
 
-oc create namespace hardware-inventory --dry-run=client -o yaml | oc apply -f -
-ok "hardware-inventory namespace"
+CAAS_NS=hardware-inventory
+oc create namespace "$CAAS_NS" --dry-run=client -o yaml | oc apply -f -
+ok "$CAAS_NS namespace"
 
-PULL_SECRET_DATA=$(cat /root/openshift_pull.json | base64 -w0)
-cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Secret
-metadata:
-  name: caas-pull-secret
-  namespace: hardware-inventory
-type: kubernetes.io/dockerconfigjson
-data:
-  .dockerconfigjson: $PULL_SECRET_DATA
-EOF
-ok "Pull secret in hardware-inventory"
+oc create secret generic caas-pull-secret -n "$CAAS_NS" \
+  --from-file=.dockerconfigjson=/root/openshift_pull.json \
+  --type=kubernetes.io/dockerconfigjson \
+  --dry-run=client -o yaml | oc apply -f -
+ok "Pull secret in $CAAS_NS"
 
-cat <<'INFRAENV_EOF' | oc apply -f -
+cat <<INFRAENV_EOF | oc apply -f -
 apiVersion: agent-install.openshift.io/v1beta1
 kind: InfraEnv
 metadata:
   name: smoke-infraenv
-  namespace: hardware-inventory
+  namespace: $CAAS_NS
+  labels:
+    osac.openshift.io/infra: smoke
 spec:
   pullSecretRef:
     name: caas-pull-secret
@@ -294,37 +290,56 @@ ok "InfraEnv 'smoke-infraenv' created"
 echo -e "  ${BOLD}⏳ Waiting for discovery ISO URL (up to 5 min)...${RESET}"
 ISO_URL=""
 for i in $(seq 1 30); do
-  ISO_URL=$(oc get infraenv smoke-infraenv -n hardware-inventory -o jsonpath='{.status.isoDownloadURL}' 2>/dev/null || echo "")
-  if [[ -n "$ISO_URL" ]]; then
-    break
-  fi
+  ISO_URL=$(oc get infraenv smoke-infraenv -n "$CAAS_NS" -o jsonpath='{.status.isoDownloadURL}' 2>/dev/null || echo "")
+  if [[ -n "$ISO_URL" ]]; then break; fi
   sleep 10
 done
 
 if [[ -z "$ISO_URL" ]]; then
   warn "InfraEnv ISO URL not available, skipping CaaS agent provisioning"
 else
-  ok "Discovery ISO: ${ISO_URL:0:80}..."
+  ok "Discovery ISO ready"
 
-  echo -e "  ${BOLD}📥 Downloading discovery ISO...${RESET}"
-  curl -skL "$ISO_URL" -o /tmp/discovery.iso
-  ok "Discovery ISO downloaded"
-
-  echo -e "  ${BOLD}🖥️  Creating worker VMs...${RESET}"
+  echo -e "  ${BOLD}🖥️  Creating worker VMs and registering as BareMetalHosts...${RESET}"
+  WORKER_MACS=("aa:bb:cc:dd:ee:01" "aa:bb:cc:dd:ee:02")
   for WORKER_IDX in 1 2; do
+    VM_NAME="smoke-worker-${WORKER_IDX}"
+    MAC="${WORKER_MACS[$((WORKER_IDX - 1))]}"
+
     kcli create vm \
       -P numcpus=8 -P memory=16384 -P disks='[100]' \
-      -P nets="[{\"name\":\"baremetalfake\"}]" \
-      -P iso=/tmp/discovery.iso \
-      -P start=true \
-      "smoke-worker-${WORKER_IDX}" 2>&1 || true
-  done
-  ok "Worker VMs created (smoke-worker-1, smoke-worker-2)"
+      -P nets="[{\"name\":\"baremetalfake\",\"mac\":\"$MAC\"}]" \
+      -P start=false \
+      "$VM_NAME" 2>&1 || true
 
-  echo -e "  ${BOLD}⏳ Waiting for agents to register (up to 10 min)...${RESET}"
+    oc create secret generic "${VM_NAME}-bmc" -n "$CAAS_NS" \
+      --from-literal=username=admin --from-literal=password=password \
+      --dry-run=client -o yaml | oc apply -f -
+
+    cat <<EOF | oc apply -f -
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: $VM_NAME
+  namespace: $CAAS_NS
+  labels:
+    infraenvs.agent-install.openshift.io: smoke-infraenv
+spec:
+  online: true
+  bootMACAddress: "$MAC"
+  automatedCleaningMode: disabled
+  bmc:
+    address: redfish-virtualmedia://192.168.254.1:9000/redfish/v1/Systems/local/$VM_NAME
+    credentialsName: ${VM_NAME}-bmc
+    disableCertificateVerification: true
+EOF
+  done
+  ok "Worker VMs + BareMetalHosts created (smoke-worker-1, smoke-worker-2)"
+
+  echo -e "  ${BOLD}⏳ Waiting for agents to register (up to 15 min)...${RESET}"
   AGENTS_READY=false
-  for i in $(seq 1 60); do
-    AGENT_COUNT=$(oc get agents -n hardware-inventory --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  for i in $(seq 1 90); do
+    AGENT_COUNT=$(oc get agents -n "$CAAS_NS" --no-headers 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$AGENT_COUNT" -ge 2 ]]; then
       AGENTS_READY=true
       break
@@ -335,9 +350,8 @@ else
   if $AGENTS_READY; then
     ok "$AGENT_COUNT agents registered"
 
-    echo -e "  ${BOLD}✅ Approving agents...${RESET}"
-    for AGENT_NAME in $(oc get agents -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name); do
-      oc patch agent "$AGENT_NAME" -n hardware-inventory --type merge \
+    for AGENT_NAME in $(oc get agents -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name); do
+      oc patch agent "$AGENT_NAME" -n "$CAAS_NS" --type merge \
         -p '{"spec":{"approved":true}}' 2>/dev/null || true
     done
     ok "All agents approved"
