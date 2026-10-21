@@ -137,6 +137,9 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   --set "clusterVersions.versions[0].version=4.17.0" \
   --set "clusterVersions.versions[0].image=quay.io/openshift-release-dev/ocp-release:4.17.0-multi" \
   --set "clusterVersions.versions[0].default=true" \
+  --set "clusterVersions.versions[0].diskImage.name=rhcos-4-17" \
+  --set "clusterVersions.versions[0].diskImage.sourceRef=oci://quay.io/osac-project/rhcos:4.17.0" \
+  --set "clusterVersions.versions[0].diskImage.architecture[0]=ARCHITECTURE_AMD64" \
   --wait --timeout 60m
 ok "osac platform deployed"
 
