@@ -147,6 +147,11 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   --wait --timeout 60m
 ok "osac platform deployed"
 
+echo -e "  ${BOLD}🔄 Restarting ingress router (passthrough TLS fix)...${RESET}"
+oc rollout restart deployment/router-default -n openshift-ingress
+oc rollout status deployment/router-default -n openshift-ingress --timeout=120s
+ok "Ingress router restarted"
+
 echo -e "  ${BOLD}🔑 Patching Keycloak osac-ui client redirect URIs...${RESET}"
 KC_URL="https://keycloak-keycloak.$DOMAIN"
 UI_URL="https://osac-ui-$NS.$DOMAIN"
@@ -188,7 +193,15 @@ step "6/7" "Bootstrapping smoke-test tenant and catalog"
 
 curl -sL "https://github.com/fullstorydev/grpcurl/releases/download/v1.9.3/grpcurl_1.9.3_linux_x86_64.tar.gz" \
   | tar xz -C /usr/local/bin grpcurl
-curl -sL "https://github.com/osac-project/osac/releases/latest/download/osac_Linux_x86_64" -o /usr/local/bin/osac
+OSAC_CLI_URL=$(curl -s "https://api.github.com/repos/osac-project/osac/releases" \
+  | python3 -c "import sys,json
+for r in json.load(sys.stdin):
+  if r['tag_name'].startswith('fulfillment-service/'):
+    for a in r['assets']:
+      if a['name']=='osac_Linux_x86_64':
+        print(a['browser_download_url']); break
+    break")
+curl -sL "$OSAC_CLI_URL" -o /usr/local/bin/osac
 chmod +x /usr/local/bin/osac
 ok "grpcurl and osac CLI installed"
 

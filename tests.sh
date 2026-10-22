@@ -35,7 +35,15 @@ API_URL="fulfillment-api-$NS.$DOMAIN:443"
 UI_URL="https://osac-ui-$NS.$DOMAIN"
 TENANT="smoke-test"
 
-curl -sL "https://github.com/osac-project/osac/releases/latest/download/osac_Linux_x86_64" -o /usr/local/bin/osac
+OSAC_CLI_URL=$(curl -s "https://api.github.com/repos/osac-project/osac/releases" \
+  | python3 -c "import sys,json
+for r in json.load(sys.stdin):
+  if r['tag_name'].startswith('fulfillment-service/'):
+    for a in r['assets']:
+      if a['name']=='osac_Linux_x86_64':
+        print(a['browser_download_url']); break
+    break")
+curl -sL "$OSAC_CLI_URL" -o /usr/local/bin/osac
 chmod +x /usr/local/bin/osac
 
 # =====================================================================
