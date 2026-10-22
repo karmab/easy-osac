@@ -202,48 +202,22 @@ if echo "$CAAS_ENABLED" | grep -q "4.17.0\|4-17-0"; then
   if [[ "$AGENT_COUNT" -ge 2 ]]; then
     pass "Worker agents available ($AGENT_COUNT)"
 
-    SSH_KEY=$(cat /root/.ssh/id_rsa.pub 2>/dev/null || echo "")
-    SA_TOKEN=$(oc create token admin -n osac --duration=1h --as system:admin)
-    INT_API="fulfillment-internal-api-$NS.$DOMAIN:443"
-
-    python3 -c "
-import json, sys
-req = {
-    'object': {
-        'metadata': {'name': 'smoke-cluster', 'tenant': '$TENANT'},
-        'spec': {
-            'template': {'name': 'ocp-ci-small', 'shared': True},
-            'template_parameters': {
-                'pull_secret': {'@type': 'type.googleapis.com/google.protobuf.StringValue',
-                                'value': open('/root/openshift_pull.json').read()},
-            },
-            'node_sets': {
-                'workers': {
-                    'size': 2,
-                    'baremetal_instance_type': {'name': 'ci-worker-bm', 'shared': True}
-                }
-            }
-        }
-    }
-}
-ssh_key = '$SSH_KEY'
-if ssh_key:
-    req['object']['spec']['template_parameters']['ssh_public_key'] = {
-        '@type': 'type.googleapis.com/google.protobuf.StringValue', 'value': ssh_key}
-print(json.dumps(req))
-" | grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
-      -d @ "$INT_API" osac.public.v1.Clusters/Create 2>&1 || true
+    osac create cluster -n smoke-cluster \
+      --catalog-item ocp-ci-small \
+      --pull-secret ci-pull-secret \
+      --ssh-public-key-file /root/.ssh/id_rsa.pub \
+      2>&1 || true
     CLEANUP+=("osac delete cluster smoke-cluster 2>/dev/null")
 
     CO=$(osac get clusters 2>&1)
     if echo "$CO" | grep -q "smoke-cluster"; then
-      pass "Create cluster order smoke-cluster"
+      pass "Create cluster smoke-cluster"
 
       echo -e "  ${BOLD}⏳ Waiting for cluster provisioning to start (up to 5 min)...${RESET}"
       PROVISION_STARTED=false
       for i in $(seq 1 30); do
         CO_STATUS=$(osac get clusters 2>&1 | grep smoke-cluster | awk '{print $NF}')
-        if [[ "$CO_STATUS" == "Provisioning" || "$CO_STATUS" == "PROVISIONING" ]]; then
+        if [[ "$CO_STATUS" == "Provisioning" || "$CO_STATUS" == "PROVISIONING" || "$CO_STATUS" == "PROGRESSING" ]]; then
           PROVISION_STARTED=true
           break
         elif [[ "$CO_STATUS" == "Ready" || "$CO_STATUS" == "READY" ]]; then
@@ -256,9 +230,9 @@ print(json.dumps(req))
       done
 
       if $PROVISION_STARTED; then
-        pass "Cluster order smoke-cluster: $CO_STATUS"
+        pass "Cluster smoke-cluster: $CO_STATUS"
       else
-        warn "Cluster order smoke-cluster: $CO_STATUS (expected Provisioning)"
+        warn "Cluster smoke-cluster: $CO_STATUS (expected Provisioning)"
       fi
 
       HC=$(oc get hostedclusters -A --no-headers 2>/dev/null | grep smoke-cluster || echo "")
@@ -268,7 +242,7 @@ print(json.dumps(req))
         warn "HostedCluster not yet created for smoke-cluster"
       fi
     else
-      fail "Create cluster order smoke-cluster"
+      fail "Create cluster smoke-cluster"
     fi
   else
     warn "Not enough agents ($AGENT_COUNT < 2), skipping CaaS cluster creation"

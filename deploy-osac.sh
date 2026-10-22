@@ -270,6 +270,7 @@ grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   "$INT_API" osac.private.v1.BareMetalInstanceTypes/Create 2>&1 || true
 ok "BareMetalInstanceType 'ci-worker-bm'"
 
+osac tenant shared
 osac create diskimage --name fedora-41 --source-ref quay.io/containerdisks/fedora:41 --architecture amd64 2>&1 || true
 ok "DiskImage 'fedora-41'"
 
@@ -295,6 +296,33 @@ ok "ComputeInstanceTemplate 'smoke-fedora'"
 osac create computeinstancecatalogitem -n fedora-41 --title "Fedora 41" --description "Fedora 41 VM" \
   --template smoke-fedora --published 2>&1 || true
 ok "CatalogItem 'fedora-41' published"
+
+cat <<'CLCAT_EOF' | osac create -f - 2>&1 || true
+"@type": type.googleapis.com/osac.public.v1.ClusterCatalogItem
+metadata:
+  name: ocp-ci-small
+title: CI OpenShift Cluster
+description: "OpenShift 4.17 cluster for CI with 2 BM workers"
+template:
+  name: ocp-ci-small
+published: true
+fields:
+  node_sets:
+    editable:
+      default_value:
+        items:
+          workers:
+            size: 2
+            baremetal_instance_type:
+              name: ci-worker-bm
+              shared: true
+CLCAT_EOF
+ok "ClusterCatalogItem 'ocp-ci-small' published"
+
+osac tenant smoke-test
+osac create secret -n ci-pull-secret --type=pull-secret \
+  --from-file=.dockerconfigjson=/root/openshift_pull.json 2>&1 || true
+ok "Pull secret 'ci-pull-secret' in smoke-test tenant"
 
 # =====================================================================
 step "7/7" "CaaS: InfraEnv + BMH agents"
