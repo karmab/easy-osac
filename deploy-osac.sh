@@ -129,6 +129,16 @@ ok "AAP manifest configured in namespace $NS"
 # =====================================================================
 step "5/7" "Phase 2: osac platform"
 
+oc apply --server-side --force-conflicts -f - <<'AAP_FIX' 2>/dev/null || true
+apiVersion: aap.ansible.com/v1alpha1
+kind: AnsibleAutomationPlatform
+metadata:
+  name: osac-aap
+  namespace: osac
+  labels:
+    app.kubernetes.io/managed-by: Helm
+AAP_FIX
+
 helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   -f values/vmaas-ci/instance.yaml \
   --set global.clusterDomain="$DOMAIN" \
@@ -136,6 +146,7 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   --set service.internalHostname="fulfillment-internal-api-$NS.$DOMAIN" \
   --set "ui.auth.oidcIssuerURL=https://keycloak-keycloak.$DOMAIN/realms/osac" \
   --set lvms.enabled=false \
+  --set global.services.bmaas.enabled=true \
   --set global.services.caas.enabled=true \
   --set clusterVersions.enabled=true \
   --set "clusterVersions.versions[0].version=4.17.0" \
@@ -253,6 +264,11 @@ grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   -d '{"object":{"metadata":{"name":"smoke-2c4g"},"spec":{"vcpus":2,"memory_gib":4,"description":"Smoke test 2 vCPU 4 GiB","state":"INSTANCE_TYPE_STATE_ACTIVE"}}}' \
   "$INT_API" osac.private.v1.InstanceTypes/Create 2>&1 || true
 ok "InstanceType 'smoke-2c4g'"
+
+grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+  -d '{"object":{"metadata":{"name":"ci-worker-bm"},"spec":{"hardware":{"cpu":{"cores":8,"architecture":"amd64","threads_per_core":1},"memory":{"total_gb":16},"network_ports":[{"name":"eth0","role":"fabric","type":"ethernet","speed":"10G"}]},"description":"CI worker 8 cores 16 GB","host_label_selector":{"match_labels":{"usage":"ci"}}}}}' \
+  "$INT_API" osac.private.v1.BareMetalInstanceTypes/Create 2>&1 || true
+ok "BareMetalInstanceType 'ci-worker-bm'"
 
 osac create diskimage --name fedora-41 --source-ref quay.io/containerdisks/fedora:41 --architecture amd64 2>&1 || true
 ok "DiskImage 'fedora-41'"

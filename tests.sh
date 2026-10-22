@@ -203,14 +203,37 @@ if echo "$CAAS_ENABLED" | grep -q "4.17.0\|4-17-0"; then
     pass "Worker agents available ($AGENT_COUNT)"
 
     SSH_KEY=$(cat /root/.ssh/id_rsa.pub 2>/dev/null || echo "")
+    SA_TOKEN=$(oc create token admin -n osac --duration=1h --as system:admin)
+    INT_API="fulfillment-internal-api-$NS.$DOMAIN:443"
 
-    osac create cluster -n smoke-cluster \
-      --template ocp-ci-small \
-      --node-set name=workers,size=2,baremetal-instance-type=ci-worker-bm \
-      --template-parameter-file pull_secret=/root/openshift_pull.json \
-      ${SSH_KEY:+-p "ssh_public_key=$SSH_KEY"} \
-      2>&1 || true
-    CLEANUP+=("osac delete cluster smoke-cluster --force 2>/dev/null")
+    python3 -c "
+import json, sys
+req = {
+    'object': {
+        'metadata': {'name': 'smoke-cluster', 'tenant': '$TENANT'},
+        'spec': {
+            'template': {'name': 'ocp-ci-small', 'shared': True},
+            'template_parameters': {
+                'pull_secret': {'@type': 'type.googleapis.com/google.protobuf.StringValue',
+                                'value': open('/root/openshift_pull.json').read()},
+            },
+            'node_sets': {
+                'workers': {
+                    'size': 2,
+                    'baremetal_instance_type': {'name': 'ci-worker-bm', 'shared': True}
+                }
+            }
+        }
+    }
+}
+ssh_key = '$SSH_KEY'
+if ssh_key:
+    req['object']['spec']['template_parameters']['ssh_public_key'] = {
+        '@type': 'type.googleapis.com/google.protobuf.StringValue', 'value': ssh_key}
+print(json.dumps(req))
+" | grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+      -d @ "$INT_API" osac.public.v1.Clusters/Create 2>&1 || true
+    CLEANUP+=("osac delete cluster smoke-cluster 2>/dev/null")
 
     CO=$(osac get clusters 2>&1)
     if echo "$CO" | grep -q "smoke-cluster"; then
