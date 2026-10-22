@@ -158,8 +158,15 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   --set "clusterVersions.versions[0].diskImage.name=rhcos-4-17" \
   --set "clusterVersions.versions[0].diskImage.sourceRef=oci://quay.io/osac-project/rhcos:4.17.0" \
   --set "clusterVersions.versions[0].diskImage.architecture[0]=ARCHITECTURE_AMD64" \
-  --wait --timeout 60m
-ok "osac platform deployed"
+  --timeout 60m
+ok "osac helm release submitted"
+
+echo -e "  ${BOLD}⏳ Waiting for core OSAC services...${RESET}"
+oc wait deployment fulfillment-service -n "$NS" --for=condition=Available --timeout=600s
+ok "fulfillment-service ready"
+oc wait deployment osac-ui -n "$NS" --for=condition=Available --timeout=600s
+ok "osac-ui ready"
+oc wait deployment fulfillment-controller -n "$NS" --for=condition=Available --timeout=600s 2>/dev/null || warn "fulfillment-controller not ready (may need router restart)"
 
 echo -e "  ${BOLD}🔄 Restarting ingress router (passthrough TLS fix)...${RESET}"
 oc rollout restart deployment/router-default -n openshift-ingress
