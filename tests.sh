@@ -204,11 +204,15 @@ if echo "$CAAS_ENABLED" | grep -q "4.17.0\|4-17-0"; then
 
     SSH_KEY=$(cat /root/.ssh/id_rsa.pub 2>/dev/null || echo "")
 
+    osac create secret --name smoke-pull-secret \
+      --from-file=.dockerconfigjson=/root/openshift_pull.json 2>&1 || true
+    CLEANUP+=("osac delete secret smoke-pull-secret 2>/dev/null")
+
     osac create cluster -n smoke-cluster \
       --catalog-item ocp-ci-small \
       --node-set name=workers,size=2,baremetal-instance-type=ci-worker-bm \
-      --template-parameter-file pull_secret=/root/openshift_pull.json \
-      ${SSH_KEY:+-p "ssh_public_key=$SSH_KEY"} \
+      --pull-secret smoke-pull-secret \
+      ${SSH_KEY:+--set "ssh_public_key=$SSH_KEY"} \
       2>&1 || true
     CLEANUP+=("osac delete cluster smoke-cluster --force 2>/dev/null")
 
