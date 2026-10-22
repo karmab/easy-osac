@@ -129,22 +129,9 @@ ok "AAP manifest configured in namespace $NS"
 # =====================================================================
 step "5/7" "Phase 2: osac platform"
 
-oc apply --server-side --force-conflicts -f - <<'AAP_FIX' 2>/dev/null || true
-apiVersion: aap.ansible.com/v1alpha1
-kind: AnsibleAutomationPlatform
-metadata:
-  name: osac-aap
-  namespace: osac
-  labels:
-    app.kubernetes.io/managed-by: Helm
-  annotations:
-    meta.helm.sh/release-name: osac
-    meta.helm.sh/release-namespace: osac
-AAP_FIX
-
 oc delete job -n "$NS" -l app.kubernetes.io/managed-by=Helm --field-selector=status.successful=0 2>/dev/null || true
 
-helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
+helm upgrade --install osac charts/osac -n "$NS" --create-namespace --force-conflicts \
   -f values/vmaas-ci/instance.yaml \
   --set global.clusterDomain="$DOMAIN" \
   --set service.externalHostname="fulfillment-api-$NS.$DOMAIN" \
