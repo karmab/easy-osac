@@ -142,6 +142,8 @@ metadata:
     meta.helm.sh/release-namespace: osac
 AAP_FIX
 
+oc delete job -n "$NS" -l app.kubernetes.io/managed-by=Helm --field-selector=status.successful=0 2>/dev/null || true
+
 helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   -f values/vmaas-ci/instance.yaml \
   --set global.clusterDomain="$DOMAIN" \
@@ -158,7 +160,7 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   --set "clusterVersions.versions[0].diskImage.name=rhcos-4-17" \
   --set "clusterVersions.versions[0].diskImage.sourceRef=oci://quay.io/osac-project/rhcos:4.17.0" \
   --set "clusterVersions.versions[0].diskImage.architecture[0]=ARCHITECTURE_AMD64" \
-  --timeout 60m
+  --no-hooks --timeout 60m
 ok "osac helm release submitted"
 
 echo -e "  ${BOLD}⏳ Waiting for core OSAC services...${RESET}"
