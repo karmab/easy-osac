@@ -137,6 +137,9 @@ metadata:
   namespace: osac
   labels:
     app.kubernetes.io/managed-by: Helm
+  annotations:
+    meta.helm.sh/release-name: osac
+    meta.helm.sh/release-namespace: osac
 AAP_FIX
 
 helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
