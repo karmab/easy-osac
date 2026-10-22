@@ -164,8 +164,10 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
 ok "osac helm release submitted"
 
 echo -e "  ${BOLD}⏳ Waiting for core OSAC services...${RESET}"
-oc wait deployment fulfillment-service -n "$NS" --for=condition=Available --timeout=600s
-ok "fulfillment-service ready"
+oc wait deployment fulfillment-grpc-server -n "$NS" --for=condition=Available --timeout=600s
+ok "fulfillment-grpc-server ready"
+oc wait deployment fulfillment-rest-gateway -n "$NS" --for=condition=Available --timeout=600s
+ok "fulfillment-rest-gateway ready"
 oc wait deployment osac-ui -n "$NS" --for=condition=Available --timeout=600s
 ok "osac-ui ready"
 oc wait deployment fulfillment-controller -n "$NS" --for=condition=Available --timeout=600s 2>/dev/null || warn "fulfillment-controller not ready (may need router restart)"
