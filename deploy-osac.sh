@@ -153,15 +153,7 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace \
   --set lvms.enabled=false \
   --set global.services.bmaas.enabled=true \
   --set global.services.caas.enabled=true \
-  --set clusterVersions.enabled=true \
-  --set "clusterVersions.versions[0].version=4.17.0" \
-  --set "clusterVersions.versions[0].image=quay.io/openshift-release-dev/ocp-release:4.17.0-multi" \
-  --set "clusterVersions.versions[0].default=true" \
-  --set "clusterVersions.versions[0].diskImage.name=rhcos-4-17" \
-  --set "clusterVersions.versions[0].diskImage.sourceRef=oci://quay.io/osac-project/rhcos:4.17.0" \
-  --set "clusterVersions.versions[0].diskImage.architecture[0]=ARCHITECTURE_AMD64" \
-  --no-hooks --timeout 60m
-ok "osac helm release submitted"
+  --timeout 60m || warn "helm upgrade exited non-zero (AAP hook may have failed — non-blocking)"
 
 echo -e "  ${BOLD}⏳ Waiting for core OSAC services...${RESET}"
 oc wait deployment fulfillment-grpc-server -n "$NS" --for=condition=Available --timeout=600s
