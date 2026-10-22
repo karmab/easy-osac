@@ -205,7 +205,7 @@ if echo "$CAAS_ENABLED" | grep -q "4.17.0\|4-17-0"; then
     SSH_KEY=$(cat /root/.ssh/id_rsa.pub 2>/dev/null || echo "")
 
     osac create cluster -n smoke-cluster \
-      --template ocp_ci_small \
+      --catalog-item ocp-ci-small \
       --node-set name=workers,size=2,baremetal-instance-type=ci-worker-bm \
       --template-parameter-file pull_secret=/root/openshift_pull.json \
       ${SSH_KEY:+-p "ssh_public_key=$SSH_KEY"} \
