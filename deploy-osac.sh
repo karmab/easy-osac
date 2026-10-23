@@ -130,6 +130,11 @@ ok "AAP manifest configured in namespace $NS"
 step "5/7" "Phase 2: osac platform"
 
 oc delete job -n "$NS" -l app.kubernetes.io/managed-by=Helm --field-selector=status.successful=0 2>/dev/null || true
+HELM_STATUS=$(helm status osac -n "$NS" -o json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('info',{}).get('status',''))" 2>/dev/null || echo "")
+if [[ "$HELM_STATUS" == "failed" ]]; then
+  warn "Previous helm release is in 'failed' state, uninstalling to allow clean install"
+  helm uninstall osac -n "$NS" --no-hooks 2>/dev/null || true
+fi
 
 helm upgrade --install osac charts/osac -n "$NS" --create-namespace --force-conflicts \
   -f values/vmaas-ci/instance.yaml \
@@ -140,7 +145,8 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace --force-conf
   --set lvms.enabled=false \
   --set global.services.bmaas.enabled=true \
   --set global.services.caas.enabled=true \
-  --timeout 60m || warn "helm upgrade exited non-zero (AAP hook may have failed — non-blocking)"
+  --no-hooks --timeout 60m
+ok "osac helm release deployed"
 
 echo -e "  ${BOLD}⏳ Waiting for core OSAC services...${RESET}"
 oc wait deployment fulfillment-grpc-server -n "$NS" --for=condition=Available --timeout=600s
@@ -252,6 +258,43 @@ grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   -d "{\"object\":{\"metadata\":{\"name\":\"default\"},\"spec\":{\"protocol\":\"STORAGE_PROTOCOL_BLOCK\",\"backends\":[{\"backend_id\":\"$BACKEND_ID\"}]}}}" \
   "$INT_API" osac.private.v1.StorageTiers/Create 2>&1 || true
 ok "StorageTier 'default'"
+
+grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+  -d '{"object":{"metadata":{"name":"default"},"title":"K8s-only networking","description":"VMaaS overlay without a physical fabric","k8s_manager":"k8s_only","capabilities":{"supports_ipv4":true},"spec":{"defaults":{"virtual_network_ipv4_cidr":"10.128.0.0/14","subnet_ipv4_cidr":"10.128.0.0/23"}}}}' \
+  "$INT_API" osac.private.v1.NetworkClasses/Create 2>&1 || true
+ok "NetworkClass 'default'"
+
+HUB_TOKEN=$(oc get secret hub-access -n "$NS" -o jsonpath='{.data.token}' | base64 -d)
+HUB_KUBECONFIG=$(python3 -c "
+import json, base64, subprocess
+r = subprocess.run(['oc','config','view','--raw','--minify','-o','json'], capture_output=True, text=True)
+kc = json.loads(r.stdout)
+kc['users'][0]['user'] = {'token': '$HUB_TOKEN'}
+print(base64.b64encode(json.dumps(kc).encode()).decode())
+")
+grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+  -d "{\"object\":{\"metadata\":{\"name\":\"local\"},\"spec\":{\"kubeconfig\":\"$HUB_KUBECONFIG\",\"namespace\":\"$NS\"}}}" \
+  "$INT_API" osac.private.v1.Hubs/Create 2>&1 || true
+ok "Hub 'local' registered"
+
+grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+  -d '{"object":{"metadata":{"name":"4-17-0"},"spec":{"version":"4.17.0","image":"quay.io/openshift-release-dev/ocp-release:4.17.0-multi","enabled":true}}}' \
+  "$INT_API" osac.private.v1.ClusterVersions/Create 2>&1 || true
+ok "ClusterVersion '4.17.0'"
+
+echo -e "  ${BOLD}⏳ Waiting for NetworkClass to become READY (up to 5 min)...${RESET}"
+for i in $(seq 1 30); do
+  NC_STATE=$(grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+    -d '{}' "$INT_API" osac.private.v1.NetworkClasses/List 2>&1 \
+    | python3 -c "import sys,json; items=json.load(sys.stdin).get('items',[]); print(items[0]['status']['state'] if items else 'NONE')" 2>/dev/null)
+  if [[ "$NC_STATE" == "NETWORK_CLASS_STATE_READY" ]]; then break; fi
+  sleep 10
+done
+if [[ "$NC_STATE" == "NETWORK_CLASS_STATE_READY" ]]; then
+  ok "NetworkClass READY"
+else
+  warn "NetworkClass state: $NC_STATE (expected READY)"
+fi
 
 grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   -d '{"object":{"metadata":{"name":"smoke-2c4g"},"spec":{"vcpus":2,"memory_gib":4,"description":"Smoke test 2 vCPU 4 GiB","state":"INSTANCE_TYPE_STATE_ACTIVE"}}}' \
