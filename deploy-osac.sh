@@ -145,8 +145,8 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace --force-conf
   --set lvms.enabled=false \
   --set global.services.bmaas.enabled=true \
   --set global.services.caas.enabled=true \
-  --no-hooks --timeout 60m
-ok "osac helm release deployed"
+  --timeout 60m || warn "helm exited non-zero (AAP hook may have failed — non-blocking)"
+ok "osac helm release submitted"
 
 echo -e "  ${BOLD}⏳ Waiting for core OSAC services...${RESET}"
 oc wait deployment fulfillment-grpc-server -n "$NS" --for=condition=Available --timeout=600s
