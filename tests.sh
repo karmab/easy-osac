@@ -194,9 +194,11 @@ fi
 # =====================================================================
 step "5/6" "CaaS cluster lifecycle"
 
+OCP_VERSION=$(oc get clusterversion version -o jsonpath='{.status.desired.version}')
+OCP_MINOR="${OCP_VERSION%.*}"
 CAAS_ENABLED=$(osac get clusterversions 2>&1 || echo "")
-if echo "$CAAS_ENABLED" | grep -q "4.22.0\|4-22-0"; then
-  pass "CaaS service enabled (ClusterVersion 4.22.0)"
+if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
+  pass "CaaS service enabled (ClusterVersion ${OCP_MINOR})"
 
   AGENT_COUNT=$(oc get agents -n hardware-inventory --no-headers 2>/dev/null | wc -l | tr -d ' ')
   if [[ "$AGENT_COUNT" -ge 2 ]]; then
@@ -206,7 +208,7 @@ if echo "$CAAS_ENABLED" | grep -q "4.22.0\|4-22-0"; then
       --catalog-item ocp-ci-small \
       --pull-secret ci-pull-secret \
       --ssh-public-key-file /root/.ssh/id_rsa.pub \
-      --version 4.22.0 \
+      --version "${OCP_MINOR}.0" \
       2>&1 || true
     CLEANUP+=("osac delete cluster smoke-cluster 2>/dev/null")
 

@@ -277,10 +277,13 @@ grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   "$INT_API" osac.private.v1.Hubs/Create 2>&1 || true
 ok "Hub 'local' registered"
 
+OCP_VERSION=$(oc get clusterversion version -o jsonpath='{.status.desired.version}')
+OCP_MINOR="${OCP_VERSION%.*}"
+CV_NAME="${OCP_MINOR//./-}-0"
 grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
-  -d '{"object":{"metadata":{"name":"4-22-0"},"spec":{"version":"4.22.0","image":"quay.io/openshift-release-dev/ocp-release:4.22.0-multi","enabled":true}}}' \
+  -d "{\"object\":{\"metadata\":{\"name\":\"$CV_NAME\"},\"spec\":{\"version\":\"${OCP_MINOR}.0\",\"image\":\"quay.io/openshift-release-dev/ocp-release:${OCP_MINOR}.0-multi\",\"enabled\":true}}}" \
   "$INT_API" osac.private.v1.ClusterVersions/Create 2>&1 || true
-ok "ClusterVersion '4.22.0'"
+ok "ClusterVersion '${OCP_MINOR}.0' (from cluster $OCP_VERSION)"
 
 echo -e "  ${BOLD}⏳ Waiting for NetworkClass to become READY (up to 5 min)...${RESET}"
 for i in $(seq 1 30); do
