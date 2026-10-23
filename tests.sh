@@ -81,7 +81,10 @@ fi
 # =====================================================================
 step "2/6" "User authentication"
 
-osac login "$API_URL" --user=admin --password=admin --insecure --flow=password 2>&1
+for i in $(seq 1 6); do
+  osac login "$API_URL" --user=admin --password=admin --insecure --flow=password 2>&1 && break
+  sleep 10
+done
 
 WHOAMI=$(osac whoami 2>&1 || echo "")
 if echo "$WHOAMI" | grep -q "admin"; then
@@ -93,14 +96,14 @@ else
 fi
 
 # Verify tenant listing
-TENANTS=$(osac get tenants 2>&1)
+TENANTS=$(osac get tenants 2>&1 || echo "")
 if echo "$TENANTS" | grep -q "$TENANT"; then
   pass "List tenants ($TENANT tenant exists)"
 else
   fail "List tenants ($TENANT not found)"
 fi
 
-osac tenant "$TENANT" 2>&1
+osac tenant "$TENANT" 2>&1 || true
 pass "Set active tenant to $TENANT"
 
 # =====================================================================

@@ -145,7 +145,7 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace --force-conf
   --set lvms.enabled=false \
   --set global.services.bmaas.enabled=true \
   --set global.services.caas.enabled=true \
-  --timeout 60m || warn "helm exited non-zero (AAP hook may have failed — non-blocking)"
+  --timeout 15m || warn "helm exited non-zero (AAP hook may have failed — non-blocking)"
 ok "osac helm release submitted"
 
 echo -e "  ${BOLD}⏳ Waiting for core OSAC services...${RESET}"
@@ -216,10 +216,14 @@ chmod +x /usr/local/bin/osac
 ok "grpcurl and osac CLI installed"
 
 API_URL="fulfillment-api-$NS.$DOMAIN:443"
-osac login "$API_URL" --user=admin --password=admin --insecure --flow=password 2>&1
+echo -e "  ${BOLD}⏳ Waiting for OSAC API to accept login (up to 2 min)...${RESET}"
+for i in $(seq 1 12); do
+  osac login "$API_URL" --user=admin --password=admin --insecure --flow=password 2>&1 && break
+  sleep 10
+done
 
-oc label sc odf-storagecluster-ceph-rbd osac.openshift.io/tenant=Default --overwrite
-ok "StorageClass labeled for tenant use"
+oc label sc odf-storagecluster-ceph-rbd osac.openshift.io/tenant=Default --overwrite 2>/dev/null \
+  || warn "StorageClass odf-storagecluster-ceph-rbd not found"
 
 oc create namespace smoke-test --dry-run=client -o yaml | oc apply -f -
 
@@ -236,7 +240,7 @@ TENANT_EOF
 ok "Tenant CR created"
 
 INT_API="fulfillment-internal-api-$NS.$DOMAIN:443"
-SA_TOKEN=$(oc create token admin -n osac --duration=1h --as system:admin)
+SA_TOKEN=$(oc create token admin -n osac --duration=1h --as system:admin 2>/dev/null || echo "")
 
 grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   -d '{"object":{"metadata":{"name":"smoke-test"}}}' \
@@ -250,7 +254,7 @@ BACKEND_ID=$(grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
 if [[ -z "$BACKEND_ID" ]]; then
   BACKEND_ID=$(grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
     -d '{}' "$INT_API" osac.private.v1.StorageBackends/List 2>&1 \
-    | python3 -c "import sys,json; items=json.load(sys.stdin).get('items',[]); print(next(i['id'] for i in items if i.get('metadata',{}).get('name')=='odf'))")
+    | python3 -c "import sys,json; items=json.load(sys.stdin).get('items',[]); print(next((i['id'] for i in items if i.get('metadata',{}).get('name')=='odf'), ''))" 2>/dev/null || echo "")
 fi
 ok "StorageBackend 'odf' ($BACKEND_ID)"
 
@@ -264,18 +268,27 @@ grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   "$INT_API" osac.private.v1.NetworkClasses/Create 2>&1 || true
 ok "NetworkClass 'default'"
 
-HUB_TOKEN=$(oc get secret hub-access -n "$NS" -o jsonpath='{.data.token}' | base64 -d)
-HUB_KUBECONFIG=$(python3 -c "
+echo -e "  ${BOLD}⏳ Waiting for hub-access secret (up to 3 min)...${RESET}"
+for i in $(seq 1 18); do
+  oc get secret hub-access -n "$NS" &>/dev/null && break
+  sleep 10
+done
+HUB_TOKEN=$(oc get secret hub-access -n "$NS" -o jsonpath='{.data.token}' 2>/dev/null | base64 -d || echo "")
+if [[ -n "$HUB_TOKEN" ]]; then
+  HUB_KUBECONFIG=$(python3 -c "
 import json, base64, subprocess
 r = subprocess.run(['oc','config','view','--raw','--minify','-o','json'], capture_output=True, text=True)
 kc = json.loads(r.stdout)
 kc['users'][0]['user'] = {'token': '$HUB_TOKEN'}
 print(base64.b64encode(json.dumps(kc).encode()).decode())
 ")
-grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
-  -d "{\"object\":{\"metadata\":{\"name\":\"local\"},\"spec\":{\"kubeconfig\":\"$HUB_KUBECONFIG\",\"namespace\":\"$NS\"}}}" \
-  "$INT_API" osac.private.v1.Hubs/Create 2>&1 || true
-ok "Hub 'local' registered"
+  grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+    -d "{\"object\":{\"metadata\":{\"name\":\"local\"},\"spec\":{\"kubeconfig\":\"$HUB_KUBECONFIG\",\"namespace\":\"$NS\"}}}" \
+    "$INT_API" osac.private.v1.Hubs/Create 2>&1 || true
+  ok "Hub 'local' registered"
+else
+  warn "hub-access secret not found, skipping Hub registration (NetworkClass may stay PENDING)"
+fi
 
 OCP_VERSION=$(oc get clusterversion version -o jsonpath='{.status.desired.version}')
 OCP_MINOR="${OCP_VERSION%.*}"
@@ -309,7 +322,7 @@ grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   "$INT_API" osac.private.v1.BareMetalInstanceTypes/Create 2>&1 || true
 ok "BareMetalInstanceType 'ci-worker-bm'"
 
-osac tenant shared
+osac tenant shared 2>&1
 osac create diskimage --name fedora-41 --source-ref quay.io/containerdisks/fedora:41 --architecture amd64 2>&1 || true
 ok "DiskImage 'fedora-41'"
 
@@ -336,12 +349,12 @@ osac create computeinstancecatalogitem -n fedora-41 --title "Fedora 41" --descri
   --template smoke-fedora --published 2>&1 || true
 ok "CatalogItem 'fedora-41' published"
 
-cat <<'CLCAT_EOF' | osac create -f - 2>&1 || true
+cat <<CLCAT_EOF | osac create -f - 2>&1 || true
 "@type": type.googleapis.com/osac.public.v1.ClusterCatalogItem
 metadata:
   name: ocp-ci-small
 title: CI OpenShift Cluster
-description: "OpenShift 4.17 cluster for CI with 2 BM workers"
+description: "OpenShift ${OCP_MINOR} cluster for CI with 2 BM workers"
 template:
   name: ocp-ci-small
 published: true
@@ -358,7 +371,7 @@ fields:
 CLCAT_EOF
 ok "ClusterCatalogItem 'ocp-ci-small' published"
 
-osac tenant smoke-test
+osac tenant smoke-test 2>&1
 osac create secret -n ci-pull-secret --type=pull-secret \
   --from-file=.dockerconfigjson=/root/openshift_pull.json 2>&1 || true
 ok "Pull secret 'ci-pull-secret' in smoke-test tenant"
