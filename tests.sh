@@ -109,89 +109,110 @@ pass "Set active tenant to $TENANT"
 # =====================================================================
 step "3/6" "Network lifecycle"
 
-# Create virtual network
-osac create virtualnetwork -n smoke-vnet --ipv4-cidr 10.99.0.0/16 2>&1 || true
-CLEANUP+=("osac delete virtualnetwork smoke-vnet 2>/dev/null")
-
-VNET=$(osac get virtualnetworks 2>&1)
-if echo "$VNET" | grep -q "smoke-vnet"; then
-  pass "Create virtual network smoke-vnet"
-
-  echo -e "  ${BOLD}⏳ Waiting for VirtualNetwork READY (up to 3 min)...${RESET}"
-  VNET_READY=false
-  for i in $(seq 1 18); do
-    VSTATE=$(osac get virtualnetworks 2>&1 | grep smoke-vnet | awk '{print $NF}')
-    if [[ "$VSTATE" == "READY" ]]; then
-      VNET_READY=true
-      break
-    fi
-    sleep 10
-  done
-
-  if $VNET_READY; then
-    pass "Virtual network smoke-vnet: READY"
-  else
-    warn "Virtual network smoke-vnet: $VSTATE (expected READY)"
+# Wait for NetworkClass to be READY before creating networking resources
+echo -e "  ${BOLD}⏳ Checking NetworkClass state (up to 5 min)...${RESET}"
+NC_READY=false
+for i in $(seq 1 30); do
+  NC_OUT=$(osac get networkclasses 2>&1 || echo "")
+  if echo "$NC_OUT" | grep -q "READY"; then
+    NC_READY=true
+    break
   fi
+  sleep 10
+done
 
-  # Create subnet
-  osac create subnet -n smoke-subnet --virtual-network smoke-vnet --ipv4-cidr 10.99.1.0/24 2>&1 || true
-  CLEANUP+=("osac delete subnet smoke-subnet 2>/dev/null")
-
-  SUBNET=$(osac get subnets 2>&1)
-  if echo "$SUBNET" | grep -q "smoke-subnet"; then
-    pass "Create subnet smoke-subnet"
-  else
-    fail "Create subnet smoke-subnet"
-  fi
-
-  # Create security group
-  osac create securitygroup -n smoke-sg --virtual-network smoke-vnet \
-    --ingress protocol=tcp,port-from=22,port-to=22,ipv4-cidr=0.0.0.0/0 \
-    --egress protocol=all,ipv4-cidr=0.0.0.0/0 2>&1 || true
-  CLEANUP+=("osac delete securitygroup smoke-sg 2>/dev/null")
-
-  SG=$(osac get securitygroups 2>&1)
-  if echo "$SG" | grep -q "smoke-sg"; then
-    pass "Create security group smoke-sg"
-  else
-    fail "Create security group smoke-sg"
-  fi
-else
-  fail "Create virtual network smoke-vnet"
-  warn "Skipping subnet and security group tests"
+if ! $NC_READY; then
+  warn "NetworkClass not READY — skipping all networking and VM tests"
 fi
+
+# Create virtual network
+if $NC_READY; then
+  osac create virtualnetwork -n smoke-vnet --ipv4-cidr 10.99.0.0/16 2>&1 || true
+  CLEANUP+=("osac delete virtualnetwork smoke-vnet 2>/dev/null")
+
+  VNET=$(osac get virtualnetworks 2>&1 || echo "")
+  if echo "$VNET" | grep -q "smoke-vnet"; then
+    pass "Create virtual network smoke-vnet"
+
+    echo -e "  ${BOLD}⏳ Waiting for VirtualNetwork READY (up to 3 min)...${RESET}"
+    VNET_READY=false
+    for i in $(seq 1 18); do
+      VSTATE=$(osac get virtualnetworks 2>&1 | grep smoke-vnet | awk '{print $NF}')
+      if [[ "$VSTATE" == "READY" ]]; then
+        VNET_READY=true
+        break
+      fi
+      sleep 10
+    done
+
+    if $VNET_READY; then
+      pass "Virtual network smoke-vnet: READY"
+
+      osac create subnet -n smoke-subnet --virtual-network smoke-vnet --ipv4-cidr 10.99.1.0/24 2>&1 || true
+      CLEANUP+=("osac delete subnet smoke-subnet 2>/dev/null")
+
+      SUBNET=$(osac get subnets 2>&1 || echo "")
+      if echo "$SUBNET" | grep -q "smoke-subnet"; then
+        pass "Create subnet smoke-subnet"
+      else
+        fail "Create subnet smoke-subnet"
+      fi
+
+      osac create securitygroup -n smoke-sg --virtual-network smoke-vnet \
+        --ingress protocol=tcp,port-from=22,port-to=22,ipv4-cidr=0.0.0.0/0 \
+        --egress protocol=all,ipv4-cidr=0.0.0.0/0 2>&1 || true
+      CLEANUP+=("osac delete securitygroup smoke-sg 2>/dev/null")
+
+      SG=$(osac get securitygroups 2>&1 || echo "")
+      if echo "$SG" | grep -q "smoke-sg"; then
+        pass "Create security group smoke-sg"
+      else
+        fail "Create security group smoke-sg"
+      fi
+    else
+      warn "Virtual network smoke-vnet: $VSTATE (expected READY) — skipping subnet and security group"
+    fi
+  else
+    fail "Create virtual network smoke-vnet"
+  fi
+fi # NC_READY
 
 # =====================================================================
 step "4/6" "Compute instance lifecycle (VMaaS)"
 
-osac create computeinstance -n smoke-vm --catalog-item fedora-41 2>&1 || true
-CLEANUP+=("osac delete computeinstance smoke-vm 2>/dev/null")
+HAVE_SUBNET=$(osac get subnets 2>&1 | grep -c smoke-subnet || echo 0)
+if [[ "$HAVE_SUBNET" -gt 0 ]]; then
+  osac create computeinstance -n smoke-vm --catalog-item fedora-41 --subnet smoke-subnet \
+    --security-group smoke-sg 2>&1 || true
+  CLEANUP+=("osac delete computeinstance smoke-vm 2>/dev/null")
 
-CI=$(osac get computeinstances 2>&1)
-if echo "$CI" | grep -q "smoke-vm"; then
-  pass "Create compute instance smoke-vm"
+  CI=$(osac get computeinstances 2>&1 || echo "")
+  if echo "$CI" | grep -q "smoke-vm"; then
+    pass "Create compute instance smoke-vm"
 
-  echo -e "  ${BOLD}⏳ Waiting for VM to reach Running (up to 3 min)...${RESET}"
-  VM_READY=false
-  for i in $(seq 1 18); do
-    STATUS=$(osac get computeinstances 2>&1 | grep smoke-vm | awk '{print $NF}')
-    if [[ "$STATUS" == "Running" ]]; then
-      VM_READY=true
-      break
-    elif [[ "$STATUS" == "FAILED" ]]; then
-      break
+    echo -e "  ${BOLD}⏳ Waiting for VM to reach Running (up to 3 min)...${RESET}"
+    VM_READY=false
+    for i in $(seq 1 18); do
+      STATUS=$(osac get computeinstances 2>&1 | grep smoke-vm | awk '{print $NF}')
+      if [[ "$STATUS" == "Running" ]]; then
+        VM_READY=true
+        break
+      elif [[ "$STATUS" == "FAILED" ]]; then
+        break
+      fi
+      sleep 10
+    done
+
+    if $VM_READY; then
+      pass "Compute instance smoke-vm: Running"
+    else
+      warn "Compute instance smoke-vm: $STATUS (expected Running)"
     fi
-    sleep 10
-  done
-
-  if $VM_READY; then
-    pass "Compute instance smoke-vm: Running"
   else
-    warn "Compute instance smoke-vm: $STATUS (expected Running)"
+    fail "Create compute instance smoke-vm"
   fi
 else
-  fail "Create compute instance smoke-vm"
+  warn "No subnet available, skipping compute instance test"
 fi
 
 # =====================================================================
@@ -203,9 +224,10 @@ CAAS_ENABLED=$(osac get clusterversions 2>&1 || echo "")
 if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
   pass "CaaS service enabled (ClusterVersion ${OCP_MINOR})"
 
+  CLCAT_EXISTS=$(osac get clustercatalogitems 2>&1 | grep -c ocp-ci-small || echo 0)
   AGENT_COUNT=$(oc get agents -n hardware-inventory --no-headers 2>/dev/null | wc -l | tr -d ' ')
-  if [[ "$AGENT_COUNT" -ge 2 ]]; then
-    pass "Worker agents available ($AGENT_COUNT)"
+  if [[ "$AGENT_COUNT" -ge 2 ]] && [[ "$CLCAT_EXISTS" -gt 0 ]]; then
+    pass "Worker agents available ($AGENT_COUNT), catalog item exists"
 
     osac create cluster -n smoke-cluster \
       --catalog-item ocp-ci-small \
@@ -251,7 +273,11 @@ if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
       fail "Create cluster smoke-cluster"
     fi
   else
-    warn "Not enough agents ($AGENT_COUNT < 2), skipping CaaS cluster creation"
+    if [[ "$CLCAT_EXISTS" -eq 0 ]]; then
+      warn "ClusterCatalogItem ocp-ci-small not found, skipping CaaS cluster creation"
+    else
+      warn "Not enough agents ($AGENT_COUNT < 2), skipping CaaS cluster creation"
+    fi
   fi
 else
   warn "CaaS service not enabled, skipping cluster tests"

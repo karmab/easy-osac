@@ -349,6 +349,15 @@ osac create computeinstancecatalogitem -n fedora-41 --title "Fedora 41" --descri
   --template smoke-fedora --published 2>&1 || true
 ok "CatalogItem 'fedora-41' published"
 
+cat <<CTMPL_EOF | osac create -f - 2>&1 || true
+"@type": type.googleapis.com/osac.public.v1.ClusterTemplate
+metadata:
+  name: ocp-ci-small
+title: CI OpenShift Cluster
+description: "Small OCP ${OCP_MINOR} cluster for CI"
+CTMPL_EOF
+ok "ClusterTemplate 'ocp-ci-small'"
+
 cat <<CLCAT_EOF | osac create -f - 2>&1 || true
 "@type": type.googleapis.com/osac.public.v1.ClusterCatalogItem
 metadata:
@@ -370,6 +379,13 @@ fields:
               shared: true
 CLCAT_EOF
 ok "ClusterCatalogItem 'ocp-ci-small' published"
+
+CLCAT_CHECK=$(osac get clustercatalogitems 2>&1 || echo "")
+if echo "$CLCAT_CHECK" | grep -q "ocp-ci-small"; then
+  ok "ClusterCatalogItem verified"
+else
+  warn "ClusterCatalogItem creation may have failed — CaaS cluster test will be skipped"
+fi
 
 osac tenant smoke-test 2>&1
 osac create secret -n ci-pull-secret --type=pull-secret \
