@@ -201,6 +201,27 @@ ok "All demo user passwords set to 'admin'"
 
 step "6/7" "Bootstrapping smoke-test tenant and catalog"
 
+echo -e "  ${BOLD}🔑 Creating AAP API token for osac-operator...${RESET}"
+AAP_ADMIN_PASS=$(oc get secret osac-aap-admin-password -n "$NS" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || echo "")
+if [[ -n "$AAP_ADMIN_PASS" ]]; then
+  AAP_TOKEN=$(oc exec deploy/osac-operator -n "$NS" -- \
+    curl -s -X POST http://osac-aap/api/controller/v2/tokens/ \
+    -u "admin:$AAP_ADMIN_PASS" -H 'Content-Type: application/json' \
+    -d '{"scope":"write"}' 2>/dev/null \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>/dev/null || echo "")
+  if [[ -n "$AAP_TOKEN" ]]; then
+    oc create secret generic osac-aap-api-token -n "$NS" \
+      --from-literal=token="$AAP_TOKEN" --dry-run=client -o yaml | oc apply -f -
+    oc rollout restart deployment/osac-operator -n "$NS"
+    oc rollout status deployment/osac-operator -n "$NS" --timeout=60s 2>/dev/null || true
+    ok "AAP API token created and operator restarted"
+  else
+    warn "Could not create AAP token (AAP may not be ready)"
+  fi
+else
+  warn "AAP admin password not found, skipping token creation"
+fi
+
 curl -sL "https://github.com/fullstorydev/grpcurl/releases/download/v1.9.3/grpcurl_1.9.3_linux_x86_64.tar.gz" \
   | tar xz -C /usr/local/bin grpcurl
 OSAC_CLI_URL=$(curl -s "https://api.github.com/repos/osac-project/osac/releases" \
