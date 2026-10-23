@@ -137,6 +137,22 @@ if echo "$VNET" | grep -q "smoke-vnet"; then
     SUBNET=$(osac get subnets 2>&1 || echo "")
     if echo "$SUBNET" | grep -q "smoke-subnet"; then
       pass "Create subnet smoke-subnet"
+
+      echo -e "  ${BOLD}⏳ Waiting for subnet READY (up to 2 min)...${RESET}"
+      SUBNET_READY=false
+      for i in $(seq 1 12); do
+        SSTATE=$(osac get subnets 2>&1 | grep smoke-subnet | awk '{print $NF}')
+        if [[ "$SSTATE" == "READY" ]]; then
+          SUBNET_READY=true
+          break
+        fi
+        sleep 10
+      done
+      if $SUBNET_READY; then
+        pass "Subnet smoke-subnet: READY"
+      else
+        warn "Subnet smoke-subnet: $SSTATE (expected READY)"
+      fi
     else
       fail "Create subnet smoke-subnet"
     fi

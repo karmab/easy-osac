@@ -434,6 +434,39 @@ CAAS_NS=hardware-inventory
 oc create namespace "$CAAS_NS" --dry-run=client -o yaml | oc apply -f -
 ok "$CAAS_NS namespace"
 
+cat <<'BMF_EOF' | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: osac-inventory-config
+  namespace: osac
+stringData:
+  inventory.yaml: |
+    name: metal3-inventory
+    type: metal3
+    hostClass: metal3
+    options:
+      metal3:
+        namespace: "hardware-inventory"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: osac-management-config
+  namespace: osac
+stringData:
+  management.yaml: |
+    name: metal3-management
+    type: metal3
+    options:
+      metal3:
+        namespace: "hardware-inventory"
+BMF_EOF
+ok "BMF operator secrets (inventory + management config)"
+
+oc rollout restart deployment/bmf-operator-controller-manager -n osac 2>/dev/null || true
+oc rollout status deployment/bmf-operator-controller-manager -n osac --timeout=120s 2>/dev/null || warn "BMF operator not ready"
+
 oc create secret generic caas-pull-secret -n "$CAAS_NS" \
   --from-file=.dockerconfigjson=/root/openshift_pull.json \
   --type=kubernetes.io/dockerconfigjson \
