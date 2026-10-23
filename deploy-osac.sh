@@ -317,7 +317,7 @@ CV_NAME="${OCP_MINOR//./-}-0"
 grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   -d "{\"object\":{\"metadata\":{\"name\":\"$CV_NAME\"},\"spec\":{\"version\":\"${OCP_MINOR}.0\",\"image\":\"quay.io/openshift-release-dev/ocp-release:${OCP_MINOR}.0-multi\",\"enabled\":true}}}" \
   "$INT_API" osac.private.v1.ClusterVersions/Create 2>&1 || true
-ok "ClusterVersion '${OCP_MINOR}.0' (from cluster $OCP_VERSION)"
+ok "ClusterVersion '${OCP_MINOR}.0' (shared tenant)"
 
 echo -e "  ${BOLD}⏳ Waiting for NetworkClass to become READY (up to 5 min)...${RESET}"
 for i in $(seq 1 30); do
@@ -370,6 +370,24 @@ osac create computeinstancecatalogitem -n fedora-41 --title "Fedora 41" --descri
   --template smoke-fedora --published 2>&1 || true
 ok "CatalogItem 'fedora-41' published"
 
+osac tenant smoke-test 2>&1
+osac create secret -n ci-pull-secret --type=pull-secret \
+  --from-file=.dockerconfigjson=/root/openshift_pull.json 2>&1 || true
+ok "Pull secret 'ci-pull-secret' in smoke-test tenant"
+
+RHCOS_DI_NAME="rhcos-${OCP_MINOR//./-}"
+osac create diskimage --name "$RHCOS_DI_NAME" \
+  --source-ref "quay.io/openshift-release-dev/ocp-release:${OCP_MINOR}.0-multi" \
+  --architecture amd64 2>&1 || true
+ok "DiskImage '$RHCOS_DI_NAME' for CaaS (smoke-test tenant)"
+
+CV_NAME_LOCAL="${OCP_MINOR//./-}-0"
+CV_RESULT=$(grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+  -H "x-osac-tenant: smoke-test" \
+  -d "{\"object\":{\"metadata\":{\"name\":\"$CV_NAME_LOCAL\",\"tenant\":\"smoke-test\"},\"spec\":{\"version\":\"${OCP_MINOR}.0\",\"image\":\"quay.io/openshift-release-dev/ocp-release:${OCP_MINOR}.0-multi\",\"enabled\":true,\"is_default\":true,\"disk_image\":{\"name\":\"$RHCOS_DI_NAME\"}}}}" \
+  "$INT_API" osac.private.v1.ClusterVersions/Create 2>&1 || true)
+ok "ClusterVersion '${OCP_MINOR}.0' in smoke-test tenant (with disk image, default)"
+
 cat <<CTMPL_EOF | osac create -f - 2>&1 || true
 "@type": type.googleapis.com/osac.public.v1.ClusterTemplate
 metadata:
@@ -407,11 +425,6 @@ if echo "$CLCAT_CHECK" | grep -q "ocp-ci-small"; then
 else
   warn "ClusterCatalogItem creation may have failed — CaaS cluster test will be skipped"
 fi
-
-osac tenant smoke-test 2>&1
-osac create secret -n ci-pull-secret --type=pull-secret \
-  --from-file=.dockerconfigjson=/root/openshift_pull.json 2>&1 || true
-ok "Pull secret 'ci-pull-secret' in smoke-test tenant"
 
 # =====================================================================
 step "7/7" "CaaS: InfraEnv + BMH agents"
