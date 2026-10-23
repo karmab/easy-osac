@@ -164,8 +164,10 @@ step "4/6" "Compute instance lifecycle (VMaaS)"
 
 HAVE_SUBNET=$(osac get subnets 2>&1 | { grep -c smoke-subnet || true; })
 if [[ "$HAVE_SUBNET" -gt 0 ]]; then
-  osac create computeinstance -n smoke-vm --catalog-item fedora-41 --subnet smoke-subnet \
-    --security-group smoke-sg 2>&1 || true
+  SUBNET_ID=$(osac get subnets 2>&1 | grep smoke-subnet | awk '{print $3}')
+  SG_ID=$(osac get securitygroups 2>&1 | grep smoke-sg | awk '{print $3}')
+  osac create computeinstance -n smoke-vm --catalog-item fedora-41 \
+    --network-attachment "subnet=${SUBNET_ID},security-groups=${SG_ID}" 2>&1 || true
   CLEANUP+=("osac delete computeinstance smoke-vm 2>/dev/null")
 
   CI=$(osac get computeinstances 2>&1 || echo "")

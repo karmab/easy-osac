@@ -376,9 +376,10 @@ osac create secret -n ci-pull-secret --type=pull-secret \
 ok "Pull secret 'ci-pull-secret' in smoke-test tenant"
 
 RHCOS_DI_NAME="rhcos-${OCP_MINOR//./-}"
-osac create diskimage --name "$RHCOS_DI_NAME" \
-  --source-ref "quay.io/openshift-release-dev/ocp-release:${OCP_MINOR}.0-multi" \
-  --architecture amd64 2>&1 || true
+grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+  -H "x-osac-tenant: smoke-test" \
+  -d "{\"object\":{\"metadata\":{\"name\":\"$RHCOS_DI_NAME\",\"tenant\":\"smoke-test\"},\"spec\":{\"source_type\":\"SOURCE_TYPE_REGISTRY\",\"source_ref\":\"quay.io/openshift-release-dev/ocp-release:${OCP_MINOR}.0-multi\",\"guest_os_family\":\"GUEST_OS_FAMILY_LINUX\",\"architecture\":[\"ARCHITECTURE_AMD64\"],\"lifecycle\":\"DISK_IMAGE_LIFECYCLE_AVAILABLE\"}}}" \
+  "$INT_API" osac.private.v1.DiskImages/Create 2>&1 || true
 ok "DiskImage '$RHCOS_DI_NAME' for CaaS (smoke-test tenant)"
 
 CV_NAME_LOCAL="${OCP_MINOR//./-}-0"
