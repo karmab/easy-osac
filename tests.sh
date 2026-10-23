@@ -206,6 +206,7 @@ if echo "$CAAS_ENABLED" | grep -q "4.17.0\|4-17-0"; then
       --catalog-item ocp-ci-small \
       --pull-secret ci-pull-secret \
       --ssh-public-key-file /root/.ssh/id_rsa.pub \
+      --version 4.17.0 \
       2>&1 || true
     CLEANUP+=("osac delete cluster smoke-cluster 2>/dev/null")
 
