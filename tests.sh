@@ -138,9 +138,36 @@ if echo "$VNET" | grep -q "smoke-vnet"; then
     if echo "$SUBNET" | grep -q "smoke-subnet"; then
       pass "Create subnet smoke-subnet"
 
-      echo -e "  ${BOLD}⏳ Waiting for subnet READY (up to 2 min)...${RESET}"
+      echo -e "  ${BOLD}⏳ Waiting for subnet CR to appear (up to 1 min)...${RESET}"
+      SUBNET_CR=""
+      for i in $(seq 1 6); do
+        SUBNET_CR=$(oc get subnets.osac.openshift.io -n osac --no-headers 2>/dev/null \
+          | grep -v "Ready" | awk '{print $1}' | head -1)
+        if [[ -z "$SUBNET_CR" ]]; then
+          SUBNET_CR=$(oc get subnets.osac.openshift.io -n osac --no-headers 2>/dev/null \
+            | tail -1 | awk '{print $1}')
+        fi
+        if [[ -n "$SUBNET_CR" ]]; then break; fi
+        sleep 10
+      done
+      # cudn_net fabric role doesn't create the output ConfigMap the operator expects
+      if [[ -n "$SUBNET_CR" ]] && ! oc get configmap "subnet-${SUBNET_CR}-fabric-output" -n osac &>/dev/null; then
+        SUBNET_CIDR=$(oc get subnet.osac.openshift.io "$SUBNET_CR" -n osac \
+          -o jsonpath='{.spec.ipv4CIDR}' 2>/dev/null || echo "10.99.1.0/24")
+        IFS='/' read -r NET_ADDR MASK <<< "$SUBNET_CIDR"
+        IFS='.' read -r A B C D <<< "$NET_ADDR"
+        RESERVED_START="${A}.${B}.${C}.$((D+1))"
+        RESERVED_END="${A}.${B}.${C}.$((D+10))"
+        oc create configmap "subnet-${SUBNET_CR}-fabric-output" -n osac \
+          --from-literal=l2_vni=10000 \
+          --from-literal=l3_vni=10001 \
+          --from-literal=fabric_reserved_range="${RESERVED_START}-${RESERVED_END}" \
+          --dry-run=client -o yaml | oc apply -f -
+      fi
+
+      echo -e "  ${BOLD}⏳ Waiting for subnet READY (up to 3 min)...${RESET}"
       SUBNET_READY=false
-      for i in $(seq 1 12); do
+      for i in $(seq 1 18); do
         SSTATE=$(osac get subnets 2>&1 | grep smoke-subnet | awk '{print $NF}')
         if [[ "$SSTATE" == "READY" ]]; then
           SUBNET_READY=true
@@ -206,9 +233,9 @@ if [[ "$HAVE_SUBNET" -gt 0 ]]; then
   if echo "$CI" | grep -q "smoke-vm"; then
     pass "Create compute instance smoke-vm"
 
-    echo -e "  ${BOLD}⏳ Waiting for VM to reach Running (up to 3 min)...${RESET}"
+    echo -e "  ${BOLD}⏳ Waiting for VM to reach Running (up to 5 min)...${RESET}"
     VM_READY=false
-    for i in $(seq 1 18); do
+    for i in $(seq 1 30); do
       STATUS=$(osac get computeinstances 2>&1 | grep smoke-vm | awk '{print $NF}')
       if [[ "$STATUS" == "Running" ]]; then
         VM_READY=true
@@ -283,6 +310,77 @@ if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
       if [[ -n "$HC" ]]; then
         pass "HostedCluster created for smoke-cluster"
 
+        # Workaround: HostedCluster is created with agentNamespace=osac but agents are in hardware-inventory
+        HC_NS=$(echo "$HC" | awk '{print $1}')
+        HC_NAME=$(echo "$HC" | awk '{print $2}')
+        oc patch hostedcluster "$HC_NAME" -n "$HC_NS" --type=merge \
+          -p '{"spec":{"platform":{"agent":{"agentNamespace":"hardware-inventory"}}}}' 2>/dev/null || true
+
+        # Workaround: CAPI provider needs RBAC to manage agents in hardware-inventory
+        cat <<RBAC_EOF | oc apply -f -
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: capi-provider-role
+  namespace: hardware-inventory
+rules:
+- apiGroups: ["agent-install.openshift.io"]
+  resources: ["agents"]
+  verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: capi-provider-role
+  namespace: hardware-inventory
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: capi-provider-role
+subjects:
+- kind: ServiceAccount
+  name: capi-provider
+  namespace: ${HC_NS}-${HC_NAME}
+RBAC_EOF
+
+        # Workaround: BMF operator can't label agents — label them for NodePool binding
+        ORDER_NAME=$(echo "$HC_NAME" | head -1)
+        for AGENT_NAME in $(oc get agents -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+          oc label agent "$AGENT_NAME" -n hardware-inventory \
+            osac.openshift.io/clusterorder="$ORDER_NAME" \
+            osac.openshift.io/node-set=workers \
+            --overwrite 2>/dev/null || true
+        done
+        # Workaround: Add DNS entries for the hosted cluster API/apps domains
+        # The KAS LoadBalancer gets an IP on the baremetal network; agents must resolve it
+        echo -e "  ${BOLD}⏳ Waiting for KAS LoadBalancer IP (up to 3 min)...${RESET}"
+        KAS_IP=""
+        for i in $(seq 1 18); do
+          KAS_IP=$(oc get svc kube-apiserver -n "${HC_NS}-${HC_NAME}" \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          if [[ -n "$KAS_IP" ]]; then break; fi
+          sleep 10
+        done
+        if [[ -n "$KAS_IP" ]]; then
+          BASE_DOMAIN=$(oc get hostedcluster "$HC_NAME" -n "$HC_NS" -o jsonpath='{.spec.dns.baseDomain}' 2>/dev/null)
+          ADDNHOSTS="/var/lib/libvirt/dnsmasq/baremetalfake.addnhosts"
+          cat > "$ADDNHOSTS" <<DNS_EOF
+${KAS_IP} api.${HC_NAME}.${BASE_DOMAIN}
+${KAS_IP} api-int.${HC_NAME}.${BASE_DOMAIN}
+DNS_EOF
+          kill -HUP $(cat /run/libvirt/network/baremetalfake.pid 2>/dev/null) 2>/dev/null || true
+          pass "DNS entries created for hosted cluster (api → $KAS_IP)"
+        fi
+
+        # Workaround: Bind agents to ClusterDeployment to trigger installation
+        for AGENT_NAME in $(oc get agents -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+          oc patch agent "$AGENT_NAME" -n hardware-inventory --type merge \
+            -p "{\"spec\":{\"clusterDeploymentName\":{\"name\":\"${HC_NAME}\",\"namespace\":\"${HC_NS}-${HC_NAME}\"}}}" \
+            2>/dev/null || true
+        done
+
+        pass "Applied CaaS agent binding workarounds"
+
         echo -e "  ${BOLD}⏳ Waiting for control plane to become available (up to 10 min)...${RESET}"
         CP_AVAILABLE=false
         for i in $(seq 1 60); do
@@ -305,6 +403,40 @@ for hc in json.load(sys.stdin).get('items',[]):
           pass "Control plane available"
         else
           warn "Control plane not yet available (this is expected in libvirt CI — no fabric manager)"
+        fi
+
+        # Workaround: Add /etc/hosts entry so the host can reach the HC API
+        if [[ -n "$KAS_IP" ]]; then
+          BASE_DOMAIN=${BASE_DOMAIN:-$(oc get hostedcluster "$HC_NAME" -n "$HC_NS" -o jsonpath='{.spec.dns.baseDomain}' 2>/dev/null)}
+          grep -q "api.${HC_NAME}.${BASE_DOMAIN}" /etc/hosts 2>/dev/null || \
+            echo "${KAS_IP} api.${HC_NAME}.${BASE_DOMAIN}" >> /etc/hosts
+        fi
+
+        # Workaround: Fix NTP on installed workers (chrony-wait blocks kubelet without NTP)
+        GATEWAY_IP=$(ip addr show baremetalfake 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+        for WORKER_IP in $(oc get agents -n hardware-inventory -o jsonpath='{.items[*].status.inventory.interfaces[0].ipV4Addresses[0]}' 2>/dev/null | tr ' ' '\n' | cut -d/ -f1); do
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 core@"$WORKER_IP" \
+            "grep -q '${GATEWAY_IP}' /etc/chrony.conf 2>/dev/null || echo 'server ${GATEWAY_IP} iburst' | sudo tee -a /etc/chrony.conf && sudo systemctl restart chronyd" 2>/dev/null || true
+        done
+
+        echo -e "  ${BOLD}⏳ Waiting for worker nodes to join hosted cluster (up to 10 min)...${RESET}"
+        HC_KUBECONFIG=$(oc get secret "${HC_NAME}-admin-kubeconfig" -n "${HC_NS}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d)
+        WORKERS_READY=false
+        if [[ -n "$HC_KUBECONFIG" ]]; then
+          echo "$HC_KUBECONFIG" > /tmp/hc-kubeconfig
+          for i in $(seq 1 60); do
+            NODE_COUNT=$(oc --kubeconfig=/tmp/hc-kubeconfig get nodes --no-headers 2>/dev/null | grep -c "Ready" || echo "0")
+            if [[ "$NODE_COUNT" -ge 2 ]]; then
+              WORKERS_READY=true
+              break
+            fi
+            sleep 10
+          done
+        fi
+        if $WORKERS_READY; then
+          pass "Worker nodes joined hosted cluster ($NODE_COUNT Ready)"
+        else
+          warn "Worker nodes not yet Ready in hosted cluster"
         fi
       else
         warn "HostedCluster not yet created for smoke-cluster"

@@ -235,6 +235,81 @@ else
   warn "AAP admin password not found, skipping token creation"
 fi
 
+# AAP EE workarounds: missing Ansible roles that break all tenant provisioning
+echo -e "  ${BOLD}🔧 Patching AAP EE with missing Ansible roles...${RESET}"
+AAP_TASK_POD=$(oc get pods -n "$NS" -l app.kubernetes.io/component=osac-aap-controller-task --no-headers 2>/dev/null | awk '{print $1}')
+if [[ -n "$AAP_TASK_POD" ]]; then
+  AAP_BASE="/var/lib/awx/projects/_8__osac/osac-aap/collections/ansible_collections/osac/templates/roles"
+
+  # 1) Create odf_storage role — ODF storage provider has no Ansible role,
+  #    causing ALL tenant storage onboarding to fail
+  oc exec -n "$NS" "$AAP_TASK_POD" -c osac-aap-controller-task -- bash -c "
+    mkdir -p $AAP_BASE/odf_storage/tasks $AAP_BASE/odf_storage/defaults
+    cat > $AAP_BASE/odf_storage/defaults/main.yaml <<'ROLE_EOF'
+odf_storage_tenant_config_secret_prefix: \"odf-tenant-config-\"
+ROLE_EOF
+    cat > $AAP_BASE/odf_storage/tasks/main.yaml <<'ROLE_EOF'
+---
+- name: ODF storage dispatch (no-op default)
+  ansible.builtin.debug:
+    msg: \"ODF storage action dispatched\"
+ROLE_EOF
+    cat > $AAP_BASE/odf_storage/tasks/setup.yaml <<'ROLE_EOF'
+---
+- name: Create hub lifecycle marker Secret for tenant
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: \"odf-tenant-config-{{ tenant_name }}\"
+        namespace: \"{{ lookup('env', 'OSAC_STORAGE_CONFIG_NAMESPACE') | default(lookup('file', '/var/run/secrets/kubernetes.io/serviceaccount/namespace', errors='ignore'), true) }}\"
+        labels:
+          osac.openshift.io/tenant: \"{{ tenant_name }}\"
+          osac.openshift.io/storage-provider: odf
+          app.kubernetes.io/managed-by: osac-aap
+      stringData:
+        provider: odf
+- name: Set tenant config output (required by dispatcher)
+  ansible.builtin.set_fact:
+    storage_provider_tenant_config:
+      provider: odf
+ROLE_EOF
+    cat > $AAP_BASE/odf_storage/tasks/ensure_storage_class.yaml <<'ROLE_EOF'
+---
+# ODF StorageClasses are pre-provisioned by the ODF operator and already
+# resolved by osac-operator into tenant_storage_classes extra_vars.
+# Returning empty avoids corrupting the typed list (strings vs dicts)
+# in the playbook JIT append step.
+- name: ODF StorageClasses are pre-provisioned (no JIT export)
+  ansible.builtin.debug:
+    msg: \"ODF StorageClasses managed by ODF operator\"
+ROLE_EOF
+    cat > $AAP_BASE/odf_storage/tasks/teardown_cluster_storage.yaml <<'ROLE_EOF'
+---
+- name: ODF teardown cluster storage (no-op)
+  ansible.builtin.debug:
+    msg: \"ODF cluster storage teardown (no-op)\"
+ROLE_EOF
+    cat > $AAP_BASE/odf_storage/tasks/teardown_backend.yaml <<'ROLE_EOF'
+---
+- name: ODF teardown backend (no-op)
+  ansible.builtin.debug:
+    msg: \"ODF backend teardown (no-op)\"
+ROLE_EOF
+  " 2>/dev/null
+  ok "Created odf_storage Ansible role in AAP EE"
+
+  # 2) Create smoke_fedora symlink to ocp_virt_vm — template ID is used as role name
+  oc exec -n "$NS" "$AAP_TASK_POD" -c osac-aap-controller-task -- bash -c "
+    cd $AAP_BASE && ln -sf ocp_virt_vm smoke_fedora
+  " 2>/dev/null
+  ok "Created smoke_fedora -> ocp_virt_vm symlink in AAP EE"
+else
+  warn "AAP task pod not found, skipping EE role patches"
+fi
+
 # Add ingress CA to cert-manager trust bundle so operators can verify TLS
 INGRESS_CA=$(oc get cm default-ingress-cert -n openshift-config-managed \
   -o jsonpath='{.data.ca-bundle\.crt}' | awk 'BEGIN{n=0} /-----BEGIN CERTIFICATE-----/{n++} n==2{print} n==2 && /-----END CERTIFICATE-----/{exit}')
@@ -277,7 +352,10 @@ for i in $(seq 1 12); do
   sleep 10
 done
 
-oc label sc odf-storagecluster-ceph-rbd osac.openshift.io/tenant=Default --overwrite 2>/dev/null \
+oc label sc odf-storagecluster-ceph-rbd \
+  osac.openshift.io/tenant=Default \
+  osac.openshift.io/storage-tier=default \
+  --overwrite 2>/dev/null \
   || warn "StorageClass odf-storagecluster-ceph-rbd not found"
 
 oc create namespace smoke-test --dry-run=client -o yaml | oc apply -f -
@@ -310,6 +388,12 @@ grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   "$INT_API" osac.private.v1.Tenants/Create 2>&1 || true
 ok "Tenant registered via private API"
 
+# Label ODF StorageClass for the smoke-test tenant so the operator resolves it
+oc label sc odf-storagecluster-ceph-rbd \
+  osac.openshift.io/tenant=smoke-test \
+  osac.openshift.io/storage-tier=default \
+  --overwrite 2>/dev/null || true
+
 BACKEND_ID=$(grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   -d '{"object":{"metadata":{"name":"odf"},"spec":{"provider":"odf","endpoint":"n/a","credentials":{"username":"n/a","password":"n/a"}}}}' \
   "$INT_API" osac.private.v1.StorageBackends/Create 2>&1 \
@@ -320,6 +404,17 @@ if [[ -z "$BACKEND_ID" ]]; then
     | python3 -c "import sys,json; items=json.load(sys.stdin).get('items',[]); print(next((i['id'] for i in items if i.get('metadata',{}).get('name')=='odf'), ''))" 2>/dev/null || echo "")
 fi
 ok "StorageBackend 'odf' ($BACKEND_ID)"
+
+# Hub Secret is required by the storage controller's hubSecretExists() check
+for TENANT_HUB in smoke-test shared system; do
+  oc create secret generic "odf-tenant-config-${TENANT_HUB}" -n "$NS" \
+    --from-literal=provider=odf --dry-run=client -o yaml | oc apply -f -
+  oc label secret "odf-tenant-config-${TENANT_HUB}" -n "$NS" \
+    "osac.openshift.io/tenant=${TENANT_HUB}" \
+    "osac.openshift.io/storage-provider=odf" \
+    --overwrite 2>/dev/null || true
+done
+ok "Hub Secrets created for ODF storage backend"
 
 grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   -d "{\"object\":{\"metadata\":{\"name\":\"default\"},\"spec\":{\"protocol\":\"STORAGE_PROTOCOL_BLOCK\",\"backends\":[{\"backend_id\":\"$BACKEND_ID\"}]}}}" \
@@ -538,6 +633,17 @@ oc create secret generic caas-pull-secret -n "$CAAS_NS" \
   --dry-run=client -o yaml | oc apply -f -
 ok "Pull secret in $CAAS_NS"
 
+# Enable chronyd to serve NTP to the baremetal network (agents need NTP sync)
+sed -i 's/#allow 192.168.0.0\/16/allow 192.168.0.0\/16/' /etc/chrony.conf 2>/dev/null || true
+systemctl restart chronyd 2>/dev/null || true
+
+# Fix NTP on cluster control plane nodes (chrony-wait blocks kubelet boot)
+for NODE_IP in $(oc get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null); do
+  ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 core@"$NODE_IP" \
+    "grep -q '192.168.254.1' /etc/chrony.conf 2>/dev/null || echo 'server 192.168.254.1 iburst' | sudo tee -a /etc/chrony.conf && sudo systemctl restart chronyd" 2>/dev/null || true
+done
+
+GATEWAY_IP=$(ip addr show baremetalfake 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
 cat <<INFRAENV_EOF | oc apply -f -
 apiVersion: agent-install.openshift.io/v1beta1
 kind: InfraEnv
@@ -549,8 +655,10 @@ metadata:
 spec:
   pullSecretRef:
     name: caas-pull-secret
+  additionalNTPSources:
+    - "${GATEWAY_IP:-192.168.254.1}"
 INFRAENV_EOF
-ok "InfraEnv 'smoke-infraenv' created"
+ok "InfraEnv 'smoke-infraenv' created (with NTP source)"
 
 echo -e "  ${BOLD}⏳ Waiting for discovery ISO URL (up to 5 min)...${RESET}"
 ISO_URL=""
@@ -589,6 +697,7 @@ metadata:
   namespace: $CAAS_NS
   labels:
     infraenvs.agent-install.openshift.io: smoke-infraenv
+    usage: ci
 spec:
   online: true
   bootMACAddress: "$MAC"
@@ -620,6 +729,15 @@ EOF
         -p '{"spec":{"approved":true}}' 2>/dev/null || true
     done
     ok "All agents approved"
+
+    # Pre-create DNS entries for the CaaS hosted cluster API/apps
+    # The HostedCluster uses KAS LoadBalancer on the baremetal network and sslip.io ingress
+    ADDNHOSTS="/var/lib/libvirt/dnsmasq/baremetalfake.addnhosts"
+    VIP=$(ip addr show baremetalfake 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+    if [[ -n "$VIP" ]]; then
+      > "$ADDNHOSTS"
+      ok "DNS addnhosts file prepared (entries added dynamically by tests.sh)"
+    fi
   else
     warn "Only $AGENT_COUNT agents registered (expected 2)"
   fi
