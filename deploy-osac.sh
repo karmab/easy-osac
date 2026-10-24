@@ -264,6 +264,14 @@ INT_API="fulfillment-internal-api-$NS.$DOMAIN:443"
 SA_TOKEN=$(oc create token admin -n osac --duration=1h --as system:admin 2>/dev/null || echo "")
 
 grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+  -d '{"object":{"metadata":{"name":"system"}}}' \
+  "$INT_API" osac.private.v1.Users/Create 2>&1 || true
+grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+  -d '{"object":{"metadata":{"name":"admin"}}}' \
+  "$INT_API" osac.private.v1.Users/Create 2>&1 || true
+ok "Users 'system' and 'admin' seeded"
+
+grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   -d '{"object":{"metadata":{"name":"smoke-test"}}}' \
   "$INT_API" osac.private.v1.Tenants/Create 2>&1 || true
 ok "Tenant registered via private API"
@@ -389,15 +397,6 @@ CV_RESULT=$(grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   "$INT_API" osac.private.v1.ClusterVersions/Create 2>&1 || true)
 ok "ClusterVersion '${OCP_MINOR}.0' in smoke-test tenant (with disk image, default)"
 
-cat <<CTMPL_EOF | osac create -f - 2>&1 || true
-"@type": type.googleapis.com/osac.public.v1.ClusterTemplate
-metadata:
-  name: ocp-ci-small
-title: CI OpenShift Cluster
-description: "Small OCP ${OCP_MINOR} cluster for CI"
-CTMPL_EOF
-ok "ClusterTemplate 'ocp-ci-small'"
-
 cat <<CLCAT_EOF | osac create -f - 2>&1 || true
 "@type": type.googleapis.com/osac.public.v1.ClusterCatalogItem
 metadata:
@@ -406,6 +405,7 @@ title: CI OpenShift Cluster
 description: "OpenShift ${OCP_MINOR} cluster for CI with 2 BM workers"
 template:
   name: ocp-ci-small
+  shared: true
 published: true
 fields:
   node_sets:
@@ -418,7 +418,7 @@ fields:
               name: ci-worker-bm
               shared: true
 CLCAT_EOF
-ok "ClusterCatalogItem 'ocp-ci-small' published"
+ok "ClusterCatalogItem 'ocp-ci-small' published (using shared template)"
 
 CLCAT_CHECK=$(osac get clustercatalogitems 2>&1 || echo "")
 if echo "$CLCAT_CHECK" | grep -q "ocp-ci-small"; then

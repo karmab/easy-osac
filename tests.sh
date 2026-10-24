@@ -165,6 +165,22 @@ if echo "$VNET" | grep -q "smoke-vnet"; then
     SG=$(osac get securitygroups 2>&1 || echo "")
     if echo "$SG" | grep -q "smoke-sg"; then
       pass "Create security group smoke-sg"
+
+      echo -e "  ${BOLD}⏳ Waiting for security group READY (up to 2 min)...${RESET}"
+      SG_READY=false
+      for i in $(seq 1 12); do
+        SGSTATE=$(osac get securitygroups 2>&1 | grep smoke-sg | awk '{print $NF}')
+        if [[ "$SGSTATE" == "READY" ]]; then
+          SG_READY=true
+          break
+        fi
+        sleep 10
+      done
+      if $SG_READY; then
+        pass "Security group smoke-sg: READY"
+      else
+        warn "Security group smoke-sg: $SGSTATE (expected READY)"
+      fi
     else
       fail "Create security group smoke-sg"
     fi
