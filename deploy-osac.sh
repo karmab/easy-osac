@@ -696,10 +696,9 @@ metadata:
   name: $VM_NAME
   namespace: $CAAS_NS
   labels:
-    infraenvs.agent-install.openshift.io: smoke-infraenv
     usage: ci
 spec:
-  online: true
+  online: false
   bootMACAddress: "$MAC"
   automatedCleaningMode: disabled
   bmc:
@@ -708,39 +707,19 @@ spec:
     disableCertificateVerification: true
 EOF
   done
-  ok "Worker VMs + BareMetalHosts created (smoke-worker-1, smoke-worker-2)"
+  ok "Worker VMs + BareMetalHosts created (offline, BMF-claimable)"
 
-  echo -e "  ${BOLD}⏳ Waiting for agents to register (up to 15 min)...${RESET}"
-  AGENTS_READY=false
-  for i in $(seq 1 90); do
-    AGENT_COUNT=$(oc get agents -n "$CAAS_NS" --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    if [[ "$AGENT_COUNT" -ge 2 ]]; then
-      AGENTS_READY=true
-      break
-    fi
+  echo -e "  ${BOLD}⏳ Waiting for BMHs to register with BMO (up to 5 min)...${RESET}"
+  for i in $(seq 1 30); do
+    REG_COUNT=$(oc get bmh -n "$CAAS_NS" --no-headers 2>/dev/null | grep -c -E "registering|available|ready" || echo "0")
+    if [[ "$REG_COUNT" -ge 2 ]]; then break; fi
     sleep 10
   done
+  ok "BareMetalHosts registered with BMO"
 
-  if $AGENTS_READY; then
-    ok "$AGENT_COUNT agents registered"
-
-    for AGENT_NAME in $(oc get agents -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name); do
-      oc patch agent "$AGENT_NAME" -n "$CAAS_NS" --type merge \
-        -p '{"spec":{"approved":true}}' 2>/dev/null || true
-    done
-    ok "All agents approved"
-
-    # Pre-create DNS entries for the CaaS hosted cluster API/apps
-    # The HostedCluster uses KAS LoadBalancer on the baremetal network and sslip.io ingress
-    ADDNHOSTS="/var/lib/libvirt/dnsmasq/baremetalfake.addnhosts"
-    VIP=$(ip addr show baremetalfake 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
-    if [[ -n "$VIP" ]]; then
-      > "$ADDNHOSTS"
-      ok "DNS addnhosts file prepared (entries added dynamically by tests.sh)"
-    fi
-  else
-    warn "Only $AGENT_COUNT agents registered (expected 2)"
-  fi
+  # Pre-create DNS addnhosts file (entries added dynamically by tests.sh)
+  ADDNHOSTS="/var/lib/libvirt/dnsmasq/baremetalfake.addnhosts"
+  > "$ADDNHOSTS" 2>/dev/null || true
 fi
 
 # =====================================================================

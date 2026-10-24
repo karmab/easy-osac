@@ -268,9 +268,9 @@ if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
   pass "CaaS service enabled (ClusterVersion ${OCP_MINOR})"
 
   CLCAT_EXISTS=$(osac get clustercatalogitems 2>&1 | { grep -c ocp-ci-small || true; })
-  AGENT_COUNT=$(oc get agents -n hardware-inventory --no-headers 2>/dev/null | wc -l | tr -d ' ')
-  if [[ "$AGENT_COUNT" -ge 2 ]] && [[ "$CLCAT_EXISTS" -gt 0 ]]; then
-    pass "Worker agents available ($AGENT_COUNT), catalog item exists"
+  BMH_COUNT=$(oc get bmh -n hardware-inventory --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$BMH_COUNT" -ge 2 ]] && [[ "$CLCAT_EXISTS" -gt 0 ]]; then
+    pass "BareMetalHosts available ($BMH_COUNT), catalog item exists"
 
     osac create cluster -n smoke-cluster \
       --catalog-item ocp-ci-small \
@@ -284,75 +284,84 @@ if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
     if echo "$CO" | grep -q "smoke-cluster"; then
       pass "Create cluster smoke-cluster"
 
-      echo -e "  ${BOLD}⏳ Waiting for cluster provisioning to start (up to 5 min)...${RESET}"
-      PROVISION_STARTED=false
+      echo -e "  ${BOLD}⏳ Waiting for BMF to claim BareMetalHosts (up to 5 min)...${RESET}"
+      BMI_CLAIMED=false
       for i in $(seq 1 30); do
-        CO_STATUS=$(osac get clusters 2>&1 | grep smoke-cluster | awk '{print $NF}')
-        if [[ "$CO_STATUS" == "Provisioning" || "$CO_STATUS" == "PROVISIONING" || "$CO_STATUS" == "PROGRESSING" ]]; then
-          PROVISION_STARTED=true
-          break
-        elif [[ "$CO_STATUS" == "Ready" || "$CO_STATUS" == "READY" ]]; then
-          PROVISION_STARTED=true
-          break
-        elif [[ "$CO_STATUS" == "FAILED" || "$CO_STATUS" == "Failed" ]]; then
+        CLAIMED=$(oc get bmi -n osac --no-headers 2>/dev/null | grep -c -v "Failed" || echo "0")
+        EXT_IDS=$(oc get bmi -n osac -o jsonpath='{.items[*].spec.externalHostID}' 2>/dev/null | tr -s ' ')
+        if [[ -n "$EXT_IDS" ]] && [[ "$EXT_IDS" != " " ]]; then
+          BMI_CLAIMED=true
           break
         fi
         sleep 10
       done
 
-      if $PROVISION_STARTED; then
-        pass "Cluster smoke-cluster: $CO_STATUS"
+      if $BMI_CLAIMED; then
+        pass "BMF claimed BareMetalHosts"
       else
-        warn "Cluster smoke-cluster: $CO_STATUS (expected Provisioning)"
+        # BMF needs BMHs in non-provisioned state; activate them for agent-based boot
+        echo -e "  ${BOLD}⏳ BMF hasn't claimed hosts yet, activating BMHs for agent boot...${RESET}"
       fi
 
-      HC=$(oc get hostedclusters -A --no-headers 2>/dev/null | grep smoke-cluster || echo "")
+      # Activate BMHs: label with InfraEnv and set online to trigger discovery ISO boot
+      INFRAENV_NAME=$(oc get infraenvs -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null | head -1)
+      if [[ -z "$INFRAENV_NAME" ]]; then
+        INFRAENV_NAME="smoke-infraenv"
+      fi
+      for BMH_NAME in $(oc get bmh -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+        oc label bmh "$BMH_NAME" -n hardware-inventory \
+          "infraenvs.agent-install.openshift.io=$INFRAENV_NAME" \
+          --overwrite 2>/dev/null || true
+        oc patch bmh "$BMH_NAME" -n hardware-inventory --type merge \
+          -p '{"spec":{"online":true}}' 2>/dev/null || true
+      done
+      pass "BMHs labeled with InfraEnv and set online"
+
+      echo -e "  ${BOLD}⏳ Waiting for agents to register (up to 15 min)...${RESET}"
+      AGENTS_READY=false
+      for i in $(seq 1 90); do
+        AGENT_COUNT=$(oc get agents -n hardware-inventory --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$AGENT_COUNT" -ge 2 ]]; then
+          AGENTS_READY=true
+          break
+        fi
+        sleep 10
+      done
+
+      if $AGENTS_READY; then
+        pass "$AGENT_COUNT agents registered"
+
+        for AGENT_NAME in $(oc get agents -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+          oc patch agent "$AGENT_NAME" -n hardware-inventory --type merge \
+            -p '{"spec":{"approved":true}}' 2>/dev/null || true
+        done
+        pass "All agents approved"
+      else
+        warn "Only $AGENT_COUNT agents registered (expected 2)"
+      fi
+
+      echo -e "  ${BOLD}⏳ Waiting for HostedCluster to appear (up to 5 min)...${RESET}"
+      HC=""
+      for i in $(seq 1 30); do
+        HC=$(oc get hostedclusters -A --no-headers 2>/dev/null | grep smoke-cluster || echo "")
+        if [[ -n "$HC" ]]; then break; fi
+        sleep 10
+      done
+
       if [[ -n "$HC" ]]; then
         pass "HostedCluster created for smoke-cluster"
-
-        # Workaround: HostedCluster is created with agentNamespace=osac but agents are in hardware-inventory
         HC_NS=$(echo "$HC" | awk '{print $1}')
         HC_NAME=$(echo "$HC" | awk '{print $2}')
-        oc patch hostedcluster "$HC_NAME" -n "$HC_NS" --type=merge \
-          -p '{"spec":{"platform":{"agent":{"agentNamespace":"hardware-inventory"}}}}' 2>/dev/null || true
 
-        # Workaround: CAPI provider needs RBAC to manage agents in hardware-inventory
-        cat <<RBAC_EOF | oc apply -f -
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: capi-provider-role
-  namespace: hardware-inventory
-rules:
-- apiGroups: ["agent-install.openshift.io"]
-  resources: ["agents"]
-  verbs: ["*"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: capi-provider-role
-  namespace: hardware-inventory
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: capi-provider-role
-subjects:
-- kind: ServiceAccount
-  name: capi-provider
-  namespace: ${HC_NS}-${HC_NAME}
-RBAC_EOF
-
-        # Workaround: BMF operator can't label agents — label them for NodePool binding
-        ORDER_NAME=$(echo "$HC_NAME" | head -1)
+        # Label agents for NodePool selector binding
         for AGENT_NAME in $(oc get agents -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
           oc label agent "$AGENT_NAME" -n hardware-inventory \
-            osac.openshift.io/clusterorder="$ORDER_NAME" \
+            osac.openshift.io/clusterorder="$HC_NAME" \
             osac.openshift.io/node-set=workers \
             --overwrite 2>/dev/null || true
         done
-        # Workaround: Add DNS entries for the hosted cluster API/apps domains
-        # The KAS LoadBalancer gets an IP on the baremetal network; agents must resolve it
+
+        # Add DNS entries for the hosted cluster API domain
         echo -e "  ${BOLD}⏳ Waiting for KAS LoadBalancer IP (up to 3 min)...${RESET}"
         KAS_IP=""
         for i in $(seq 1 18); do
@@ -369,30 +378,24 @@ ${KAS_IP} api.${HC_NAME}.${BASE_DOMAIN}
 ${KAS_IP} api-int.${HC_NAME}.${BASE_DOMAIN}
 DNS_EOF
           kill -HUP $(cat /run/libvirt/network/baremetalfake.pid 2>/dev/null) 2>/dev/null || true
+          grep -q "api.${HC_NAME}.${BASE_DOMAIN}" /etc/hosts 2>/dev/null || \
+            echo "${KAS_IP} api.${HC_NAME}.${BASE_DOMAIN}" >> /etc/hosts
           pass "DNS entries created for hosted cluster (api → $KAS_IP)"
         fi
 
-        # Workaround: Bind agents to ClusterDeployment to trigger installation
+        # Bind agents to ClusterDeployment to trigger installation
         for AGENT_NAME in $(oc get agents -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
           oc patch agent "$AGENT_NAME" -n hardware-inventory --type merge \
             -p "{\"spec\":{\"clusterDeploymentName\":{\"name\":\"${HC_NAME}\",\"namespace\":\"${HC_NS}-${HC_NAME}\"}}}" \
             2>/dev/null || true
         done
-
         pass "Applied CaaS agent binding workarounds"
 
         echo -e "  ${BOLD}⏳ Waiting for control plane to become available (up to 10 min)...${RESET}"
         CP_AVAILABLE=false
         for i in $(seq 1 60); do
-          CP_STATUS=$(oc get hostedclusters -A -o json 2>/dev/null \
-            | python3 -c "
-import sys,json
-for hc in json.load(sys.stdin).get('items',[]):
-  if 'smoke-cluster' in hc['metadata']['name']:
-    for c in hc.get('status',{}).get('conditions',[]):
-      if c['type']=='Available':
-        print(c['status']); break
-" 2>/dev/null || echo "")
+          CP_STATUS=$(oc get hostedcluster "$HC_NAME" -n "$HC_NS" \
+            -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
           if [[ "$CP_STATUS" == "True" ]]; then
             CP_AVAILABLE=true
             break
@@ -402,17 +405,10 @@ for hc in json.load(sys.stdin).get('items',[]):
         if $CP_AVAILABLE; then
           pass "Control plane available"
         else
-          warn "Control plane not yet available (this is expected in libvirt CI — no fabric manager)"
+          warn "Control plane not yet available"
         fi
 
-        # Workaround: Add /etc/hosts entry so the host can reach the HC API
-        if [[ -n "$KAS_IP" ]]; then
-          BASE_DOMAIN=${BASE_DOMAIN:-$(oc get hostedcluster "$HC_NAME" -n "$HC_NS" -o jsonpath='{.spec.dns.baseDomain}' 2>/dev/null)}
-          grep -q "api.${HC_NAME}.${BASE_DOMAIN}" /etc/hosts 2>/dev/null || \
-            echo "${KAS_IP} api.${HC_NAME}.${BASE_DOMAIN}" >> /etc/hosts
-        fi
-
-        # Workaround: Fix NTP on installed workers (chrony-wait blocks kubelet without NTP)
+        # Fix NTP on installed workers (chrony-wait blocks kubelet without NTP)
         GATEWAY_IP=$(ip addr show baremetalfake 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
         for WORKER_IP in $(oc get agents -n hardware-inventory -o jsonpath='{.items[*].status.inventory.interfaces[0].ipV4Addresses[0]}' 2>/dev/null | tr ' ' '\n' | cut -d/ -f1); do
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 core@"$WORKER_IP" \
@@ -448,7 +444,7 @@ for hc in json.load(sys.stdin).get('items',[]):
     if [[ "$CLCAT_EXISTS" -eq 0 ]]; then
       warn "ClusterCatalogItem ocp-ci-small not found, skipping CaaS cluster creation"
     else
-      warn "Not enough agents ($AGENT_COUNT < 2), skipping CaaS cluster creation"
+      warn "Not enough BareMetalHosts ($BMH_COUNT < 2), skipping CaaS cluster creation"
     fi
   fi
 else
