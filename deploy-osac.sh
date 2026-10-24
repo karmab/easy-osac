@@ -222,6 +222,12 @@ if [[ -n "$AAP_ADMIN_PASS" ]]; then
     oc rollout restart deployment/bmf-operator-controller-manager -n "$NS" 2>/dev/null || true
     oc rollout status deployment/bmf-operator-controller-manager -n "$NS" --timeout=120s 2>/dev/null || true
     ok "BMF operator configured with AAP URL"
+
+    # AAP needs NETWORK_STEPS_COLLECTION to dispatch cluster network tasks.
+    # Without it, osac.service.cluster_network include_role resolves to itself → infinite recursion.
+    oc patch configmap cluster-fulfillment-ig -n "$NS" --type=merge \
+      -p '{"data":{"NETWORK_STEPS_COLLECTION":"ci.steps"}}' 2>/dev/null || true
+    ok "AAP network steps collection configured"
   else
     warn "Could not create AAP token (AAP may not be ready)"
   fi
@@ -367,6 +373,37 @@ if [[ "$NC_STATE" == "NETWORK_CLASS_STATE_READY" ]]; then
   ok "NetworkClass READY"
 else
   warn "NetworkClass state: $NC_STATE (expected READY)"
+fi
+
+# cudn_net fabric role doesn't create the output ConfigMap the osac-operator expects.
+# Wait for the default subnet CR, then create the ConfigMap so the k8s target can proceed.
+echo -e "  ${BOLD}⏳ Waiting for default subnet CR (up to 3 min)...${RESET}"
+SUBNET_CR=""
+for i in $(seq 1 18); do
+  SUBNET_CR=$(oc get subnets.osac.openshift.io -n "$NS" --no-headers 2>/dev/null | awk '{print $1}' | head -1)
+  if [[ -n "$SUBNET_CR" ]]; then break; fi
+  sleep 10
+done
+if [[ -n "$SUBNET_CR" ]]; then
+  sleep 15
+  if ! oc get configmap "subnet-${SUBNET_CR}-fabric-output" -n "$NS" &>/dev/null; then
+    SUBNET_CIDR=$(oc get subnet.osac.openshift.io "$SUBNET_CR" -n "$NS" \
+      -o jsonpath='{.spec.ipv4CIDR}' 2>/dev/null || echo "10.128.0.0/23")
+    IFS='/' read -r NET_ADDR MASK <<< "$SUBNET_CIDR"
+    IFS='.' read -r A B C D <<< "$NET_ADDR"
+    RESERVED_START="${A}.${B}.${C}.$((D+1))"
+    RESERVED_END="${A}.${B}.${C}.$((D+10))"
+    oc create configmap "subnet-${SUBNET_CR}-fabric-output" -n "$NS" \
+      --from-literal=l2_vni=10000 \
+      --from-literal=l3_vni=10001 \
+      --from-literal=fabric_reserved_range="${RESERVED_START}-${RESERVED_END}" \
+      --dry-run=client -o yaml | oc apply -f -
+    ok "Created fabric-output ConfigMap for ${SUBNET_CR}"
+  else
+    ok "Fabric-output ConfigMap already exists for ${SUBNET_CR}"
+  fi
+else
+  warn "No subnet CR found, fabric-output ConfigMap not created"
 fi
 
 grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
