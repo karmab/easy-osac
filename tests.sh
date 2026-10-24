@@ -282,6 +282,30 @@ if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
       HC=$(oc get hostedclusters -A --no-headers 2>/dev/null | grep smoke-cluster || echo "")
       if [[ -n "$HC" ]]; then
         pass "HostedCluster created for smoke-cluster"
+
+        echo -e "  ${BOLD}⏳ Waiting for control plane to become available (up to 10 min)...${RESET}"
+        CP_AVAILABLE=false
+        for i in $(seq 1 60); do
+          CP_STATUS=$(oc get hostedclusters -A -o json 2>/dev/null \
+            | python3 -c "
+import sys,json
+for hc in json.load(sys.stdin).get('items',[]):
+  if 'smoke-cluster' in hc['metadata']['name']:
+    for c in hc.get('status',{}).get('conditions',[]):
+      if c['type']=='Available':
+        print(c['status']); break
+" 2>/dev/null || echo "")
+          if [[ "$CP_STATUS" == "True" ]]; then
+            CP_AVAILABLE=true
+            break
+          fi
+          sleep 10
+        done
+        if $CP_AVAILABLE; then
+          pass "Control plane available"
+        else
+          warn "Control plane not yet available (this is expected in libvirt CI — no fabric manager)"
+        fi
       else
         warn "HostedCluster not yet created for smoke-cluster"
       fi

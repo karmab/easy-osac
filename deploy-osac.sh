@@ -215,12 +215,40 @@ if [[ -n "$AAP_ADMIN_PASS" ]]; then
     oc rollout restart deployment/osac-operator -n "$NS"
     oc rollout status deployment/osac-operator -n "$NS" --timeout=60s 2>/dev/null || true
     ok "AAP API token created and operator restarted"
+
+    # BMF operator needs explicit AAP URL to enable provisioning workflows
+    oc set env deploy/bmf-operator-controller-manager -n "$NS" \
+      OSAC_AAP_URL="https://osac-aap-controller-service.$NS.svc.cluster.local"
+    oc rollout restart deployment/bmf-operator-controller-manager -n "$NS" 2>/dev/null || true
+    oc rollout status deployment/bmf-operator-controller-manager -n "$NS" --timeout=120s 2>/dev/null || true
+    ok "BMF operator configured with AAP URL"
   else
     warn "Could not create AAP token (AAP may not be ready)"
   fi
 else
   warn "AAP admin password not found, skipping token creation"
 fi
+
+# Add ingress CA to cert-manager trust bundle so operators can verify TLS
+INGRESS_CA=$(oc get cm default-ingress-cert -n openshift-config-managed \
+  -o jsonpath='{.data.ca-bundle\.crt}' | awk 'BEGIN{n=0} /-----BEGIN CERTIFICATE-----/{n++} n==2{print} n==2 && /-----END CERTIFICATE-----/{exit}')
+if [[ -n "$INGRESS_CA" ]]; then
+  oc create secret generic ingress-ca --from-literal=ca.crt="$INGRESS_CA" \
+    -n cert-manager --dry-run=client -o yaml | oc apply -f -
+  BUNDLE_SOURCES=$(oc get bundle ca-bundle -o jsonpath='{.spec.sources}' 2>/dev/null)
+  if ! echo "$BUNDLE_SOURCES" | grep -q ingress-ca; then
+    oc patch bundle ca-bundle --type=json \
+      -p='[{"op":"add","path":"/spec/sources/-","value":{"secret":{"key":"ca.crt","name":"ingress-ca"}}}]'
+  fi
+  sleep 3
+  ok "Ingress CA added to trust bundle"
+fi
+
+# osac-operator needs SSL_CERT_FILE pointing to the CA bundle for TLS verification
+oc set env deploy/osac-operator -n "$NS" SSL_CERT_FILE=/etc/ca-bundle/bundle.pem
+oc rollout restart deploy/osac-operator -n "$NS"
+oc rollout status deploy/osac-operator -n "$NS" --timeout=120s 2>/dev/null || true
+ok "osac-operator configured with CA bundle"
 
 curl -sL "https://github.com/fullstorydev/grpcurl/releases/download/v1.9.3/grpcurl_1.9.3_linux_x86_64.tar.gz" \
   | tar xz -C /usr/local/bin grpcurl
@@ -293,7 +321,7 @@ grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
 ok "StorageTier 'default'"
 
 grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
-  -d '{"object":{"metadata":{"name":"default"},"title":"K8s-only networking","description":"VMaaS overlay without a physical fabric","k8s_manager":"k8s_only","capabilities":{"supports_ipv4":true},"spec":{"defaults":{"virtual_network_ipv4_cidr":"10.128.0.0/14","subnet_ipv4_cidr":"10.128.0.0/23"}}}}' \
+  -d '{"object":{"metadata":{"name":"default"},"title":"K8s-only networking","description":"VMaaS overlay with CUDN fabric","k8s_manager":"k8s_only","fabric_manager":"cudn_net","capabilities":{"supports_ipv4":true},"spec":{"defaults":{"virtual_network_ipv4_cidr":"10.128.0.0/14","subnet_ipv4_cidr":"10.128.0.0/23"}}}}' \
   "$INT_API" osac.private.v1.NetworkClasses/Create 2>&1 || true
 ok "NetworkClass 'default'"
 
