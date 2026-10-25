@@ -470,35 +470,35 @@ else
   warn "NetworkClass state: $NC_STATE (expected READY)"
 fi
 
-# cudn_net fabric role doesn't create the output ConfigMap the osac-operator expects.
-# Wait for the default subnet CR, then create the ConfigMap so the k8s target can proceed.
-echo -e "  ${BOLD}⏳ Waiting for default subnet CR (up to 3 min)...${RESET}"
-SUBNET_CR=""
+echo -e "  ${BOLD}⏳ Waiting for subnet CRs (up to 3 min)...${RESET}"
 for i in $(seq 1 18); do
-  SUBNET_CR=$(oc get subnets.osac.openshift.io -n "$NS" --no-headers 2>/dev/null | awk '{print $1}' | head -1)
-  if [[ -n "$SUBNET_CR" ]]; then break; fi
+  SUBNET_COUNT=$(oc get subnets.osac.openshift.io -n "$NS" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$SUBNET_COUNT" -ge 1 ]]; then break; fi
   sleep 10
 done
-if [[ -n "$SUBNET_CR" ]]; then
-  sleep 15
+sleep 15
+VNI_BASE=10000
+for SUBNET_CR in $(oc get subnets.osac.openshift.io -n "$NS" --no-headers 2>/dev/null | awk '{print $1}'); do
   if ! oc get configmap "subnet-${SUBNET_CR}-fabric-output" -n "$NS" &>/dev/null; then
     SUBNET_CIDR=$(oc get subnet.osac.openshift.io "$SUBNET_CR" -n "$NS" \
-      -o jsonpath='{.spec.ipv4CIDR}' 2>/dev/null || echo "10.128.0.0/23")
+      -o jsonpath='{.spec.ipv4Cidr}' 2>/dev/null || echo "10.128.0.0/23")
     IFS='/' read -r NET_ADDR MASK <<< "$SUBNET_CIDR"
     IFS='.' read -r A B C D <<< "$NET_ADDR"
     RESERVED_START="${A}.${B}.${C}.$((D+1))"
     RESERVED_END="${A}.${B}.${C}.$((D+10))"
     oc create configmap "subnet-${SUBNET_CR}-fabric-output" -n "$NS" \
-      --from-literal=l2_vni=10000 \
-      --from-literal=l3_vni=10001 \
+      --from-literal=l2_vni=$VNI_BASE \
+      --from-literal=l3_vni=$((VNI_BASE+1)) \
       --from-literal=fabric_reserved_range="${RESERVED_START}-${RESERVED_END}" \
       --dry-run=client -o yaml | oc apply -f -
     ok "Created fabric-output ConfigMap for ${SUBNET_CR}"
   else
     ok "Fabric-output ConfigMap already exists for ${SUBNET_CR}"
   fi
-else
-  warn "No subnet CR found, fabric-output ConfigMap not created"
+  VNI_BASE=$((VNI_BASE+2))
+done
+if [[ "$SUBNET_COUNT" -eq 0 ]]; then
+  warn "No subnet CRs found, fabric-output ConfigMaps not created"
 fi
 
 grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
@@ -557,7 +557,8 @@ CV_RESULT=$(grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   "$INT_API" osac.private.v1.ClusterVersions/Create 2>&1 || true)
 ok "ClusterVersion '${OCP_MINOR}.0' in smoke-test tenant (with disk image, default)"
 
-cat <<CLCAT_EOF | osac create -f - 2>&1 || true
+osac tenant smoke-test 2>&1
+CLCAT_RESULT=$(cat <<CLCAT_EOF | osac create -f - 2>&1 || true
 "@type": type.googleapis.com/osac.public.v1.ClusterCatalogItem
 metadata:
   name: ocp-ci-small
@@ -578,13 +579,18 @@ fields:
               name: ci-worker-bm
               shared: true
 CLCAT_EOF
-ok "ClusterCatalogItem 'ocp-ci-small' published (using shared template)"
+)
+if echo "$CLCAT_RESULT" | grep -qi "created\|already exists\|ocp-ci-small"; then
+  ok "ClusterCatalogItem 'ocp-ci-small' published"
+else
+  warn "ClusterCatalogItem creation may have failed: $CLCAT_RESULT"
+fi
 
 CLCAT_CHECK=$(osac get clustercatalogitems 2>&1 || echo "")
 if echo "$CLCAT_CHECK" | grep -q "ocp-ci-small"; then
   ok "ClusterCatalogItem verified"
 else
-  warn "ClusterCatalogItem creation may have failed — CaaS cluster test will be skipped"
+  warn "ClusterCatalogItem not found — CaaS cluster test will be skipped"
 fi
 
 # =====================================================================
@@ -672,6 +678,18 @@ if [[ -z "$ISO_URL" ]]; then
   warn "InfraEnv ISO URL not available, skipping CaaS agent provisioning"
 else
   ok "Discovery ISO ready"
+
+  echo -e "  ${BOLD}🧹 Cleaning up stale CaaS resources...${RESET}"
+  for OLD_AGENT in $(oc get agents -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+    oc delete agent "$OLD_AGENT" -n "$CAAS_NS" --ignore-not-found 2>/dev/null || true
+  done
+  for OLD_BMH in $(oc get bmh -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+    oc delete bmh "$OLD_BMH" -n "$CAAS_NS" --ignore-not-found 2>/dev/null || true
+  done
+  for OLD_VM in smoke-worker-1 smoke-worker-2; do
+    kcli delete vm "$OLD_VM" -y 2>/dev/null || true
+  done
+  ok "Stale resources cleaned"
 
   echo -e "  ${BOLD}🖥️  Creating worker VMs and registering as BareMetalHosts...${RESET}"
   WORKER_MACS=("aa:bb:cc:dd:ee:01" "aa:bb:cc:dd:ee:02")
