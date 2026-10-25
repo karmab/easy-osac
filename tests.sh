@@ -142,7 +142,7 @@ if echo "$VNET" | grep -q "smoke-vnet"; then
       SUBNET_CR=""
       for i in $(seq 1 6); do
         SUBNET_CR=$(oc get subnets.osac.openshift.io -n osac --no-headers 2>/dev/null \
-          | grep -v "Ready" | awk '{print $1}' | head -1)
+          | { grep -v "Ready" || true; } | awk '{print $1}' | head -1)
         if [[ -z "$SUBNET_CR" ]]; then
           SUBNET_CR=$(oc get subnets.osac.openshift.io -n osac --no-headers 2>/dev/null \
             | tail -1 | awk '{print $1}')
@@ -153,7 +153,7 @@ if echo "$VNET" | grep -q "smoke-vnet"; then
       # cudn_net fabric role doesn't create the output ConfigMap the operator expects
       if [[ -n "$SUBNET_CR" ]] && ! oc get configmap "subnet-${SUBNET_CR}-fabric-output" -n osac &>/dev/null; then
         SUBNET_CIDR=$(oc get subnet.osac.openshift.io "$SUBNET_CR" -n osac \
-          -o jsonpath='{.spec.ipv4CIDR}' 2>/dev/null || echo "10.99.1.0/24")
+          -o jsonpath='{.spec.ipv4Cidr}' 2>/dev/null || echo "10.99.1.0/24")
         IFS='/' read -r NET_ADDR MASK <<< "$SUBNET_CIDR"
         IFS='.' read -r A B C D <<< "$NET_ADDR"
         RESERVED_START="${A}.${B}.${C}.$((D+1))"
@@ -223,8 +223,8 @@ step "4/6" "Compute instance lifecycle (VMaaS)"
 
 HAVE_SUBNET=$(osac get subnets 2>&1 | { grep -c smoke-subnet || true; })
 if [[ "$HAVE_SUBNET" -gt 0 ]]; then
-  SUBNET_ID=$(osac get subnets 2>&1 | grep smoke-subnet | awk '{print $3}')
-  SG_ID=$(osac get securitygroups 2>&1 | grep smoke-sg | awk '{print $3}')
+  SUBNET_ID=$(osac get subnets 2>&1 | { grep smoke-subnet || true; } | awk '{print $3}')
+  SG_ID=$(osac get securitygroups 2>&1 | { grep smoke-sg || true; } | awk '{print $3}')
   osac create computeinstance -n smoke-vm --catalog-item fedora-41 \
     --network-attachment "subnet=${SUBNET_ID},security-groups=${SG_ID}" 2>&1 || true
   CLEANUP+=("osac delete computeinstance smoke-vm 2>/dev/null")
