@@ -235,9 +235,14 @@ else
   warn "AAP admin password not found, skipping token creation"
 fi
 
+# Wait for AAP task pod to stabilize after operator restarts
+echo -e "  ${BOLD}⏳ Waiting for AAP task pod to be ready...${RESET}"
+oc wait deployment osac-aap-controller-task -n "$NS" --for=condition=Available --timeout=120s 2>/dev/null || true
+sleep 5
+
 # AAP EE workarounds: missing Ansible roles that break all tenant provisioning
 echo -e "  ${BOLD}🔧 Patching AAP EE with missing Ansible roles...${RESET}"
-AAP_TASK_POD=$(oc get pods -n "$NS" -l app.kubernetes.io/component=osac-aap-controller-task --no-headers 2>/dev/null | awk '{print $1}')
+AAP_TASK_POD=$(oc get pods -n "$NS" --no-headers 2>/dev/null | grep "osac-aap-controller-task" | grep Running | awk '{print $1}')
 if [[ -n "$AAP_TASK_POD" ]]; then
   AAP_BASE="/var/lib/awx/projects/_8__osac/osac-aap/collections/ansible_collections/osac/templates/roles"
 
@@ -556,6 +561,39 @@ CV_RESULT=$(grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   -d "{\"object\":{\"metadata\":{\"name\":\"$CV_NAME_LOCAL\",\"tenant\":\"smoke-test\"},\"spec\":{\"version\":\"${OCP_MINOR}.0\",\"image\":\"quay.io/openshift-release-dev/ocp-release:${OCP_MINOR}.0-multi\",\"enabled\":true,\"is_default\":true,\"disk_image\":{\"name\":\"$RHCOS_DI_NAME\"}}}}" \
   "$INT_API" osac.private.v1.ClusterVersions/Create 2>&1 || true)
 ok "ClusterVersion '${OCP_MINOR}.0' in smoke-test tenant (with disk image, default)"
+
+# Publish cluster templates via AAP (Helm hook may not have run if release failed)
+echo -e "  ${BOLD}📦 Publishing cluster templates...${RESET}"
+PUBLISH_JT_ID=$(oc exec -n "$NS" deploy/osac-aap-controller-task -c osac-aap-controller-task -- \
+  curl -sf "http://osac-aap/api/controller/v2/job_templates/?name=osac-publish-templates" \
+  -u "admin:$AAP_ADMIN_PASS" 2>/dev/null \
+  | python3 -c "import sys,json; r=json.load(sys.stdin)['results']; print(r[0]['id'] if r else '')" 2>/dev/null || echo "")
+if [[ -n "$PUBLISH_JT_ID" ]]; then
+  PUBLISH_JOB_ID=$(oc exec -n "$NS" deploy/osac-aap-controller-task -c osac-aap-controller-task -- \
+    curl -sf -X POST "http://osac-aap/api/controller/v2/job_templates/${PUBLISH_JT_ID}/launch/" \
+    -u "admin:$AAP_ADMIN_PASS" -H "Content-Type: application/json" 2>/dev/null \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || echo "")
+  if [[ -n "$PUBLISH_JOB_ID" ]]; then
+    for _pt in $(seq 1 30); do
+      PT_STATUS=$(oc exec -n "$NS" deploy/osac-aap-controller-task -c osac-aap-controller-task -- \
+        curl -sf "http://osac-aap/api/controller/v2/jobs/${PUBLISH_JOB_ID}/" \
+        -u "admin:$AAP_ADMIN_PASS" 2>/dev/null \
+        | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null || echo "unknown")
+      if [[ "$PT_STATUS" == "successful" ]]; then break; fi
+      if [[ "$PT_STATUS" == "failed" || "$PT_STATUS" == "error" ]]; then break; fi
+      sleep 5
+    done
+    if [[ "$PT_STATUS" == "successful" ]]; then
+      ok "Cluster templates published"
+    else
+      warn "Publish-templates job status: $PT_STATUS"
+    fi
+  else
+    warn "Failed to launch publish-templates job"
+  fi
+else
+  warn "osac-publish-templates job template not found in AAP"
+fi
 
 osac tenant smoke-test 2>&1
 CLCAT_RESULT=$(cat <<CLCAT_EOF | osac create -f - 2>&1 || true
