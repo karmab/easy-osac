@@ -249,13 +249,13 @@ if [[ "$HAVE_SUBNET" -gt 0 ]]; then
     if $VM_READY; then
       pass "Compute instance smoke-vm: Running"
     else
-      warn "Compute instance smoke-vm: $STATUS (expected Running)"
+      fail "Compute instance smoke-vm: $STATUS (expected Running)"
     fi
   else
     fail "Create compute instance smoke-vm"
   fi
 else
-  warn "No subnet available, skipping compute instance test"
+  fail "No subnet available, skipping compute instance test"
 fi
 
 # =====================================================================
@@ -405,7 +405,7 @@ DNS_EOF
         if $CP_AVAILABLE; then
           pass "Control plane available"
         else
-          warn "Control plane not yet available"
+          fail "Control plane not available"
         fi
 
         # Fix NTP on installed workers (chrony-wait blocks kubelet without NTP)
@@ -432,19 +432,19 @@ DNS_EOF
         if $WORKERS_READY; then
           pass "Worker nodes joined hosted cluster ($NODE_COUNT Ready)"
         else
-          warn "Worker nodes not yet Ready in hosted cluster"
+          fail "Worker nodes not Ready in hosted cluster"
         fi
       else
-        warn "HostedCluster not yet created for smoke-cluster"
+        fail "HostedCluster not created for smoke-cluster"
       fi
     else
       fail "Create cluster smoke-cluster"
     fi
   else
     if [[ "$CLCAT_EXISTS" -eq 0 ]]; then
-      warn "ClusterCatalogItem ocp-ci-small not found, skipping CaaS cluster creation"
+      fail "ClusterCatalogItem ocp-ci-small not found, skipping CaaS cluster creation"
     else
-      warn "Not enough BareMetalHosts ($BMH_COUNT < 2), skipping CaaS cluster creation"
+      fail "Not enough BareMetalHosts ($BMH_COUNT < 2), skipping CaaS cluster creation"
     fi
   fi
 else
