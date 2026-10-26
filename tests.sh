@@ -236,11 +236,11 @@ if [[ "$HAVE_SUBNET" -gt 0 ]]; then
     echo -e "  ${BOLD}⏳ Waiting for VM to reach Running (up to 5 min)...${RESET}"
     VM_READY=false
     for i in $(seq 1 30); do
-      STATUS=$(osac get computeinstances 2>&1 | grep smoke-vm | awk '{print $NF}')
-      if [[ "$STATUS" == "Running" ]]; then
+      STATUS_LINE=$(osac get computeinstances 2>&1 | grep smoke-vm)
+      if echo "$STATUS_LINE" | grep -q "RUNNING"; then
         VM_READY=true
         break
-      elif [[ "$STATUS" == "FAILED" ]]; then
+      elif echo "$STATUS_LINE" | grep -q "FAILED"; then
         break
       fi
       sleep 10
@@ -518,7 +518,7 @@ DNS_EOF
         if [[ -n "$HC_KUBECONFIG" ]]; then
           echo "$HC_KUBECONFIG" > /tmp/hc-kubeconfig
           for i in $(seq 1 60); do
-            NODE_COUNT=$(oc --kubeconfig=/tmp/hc-kubeconfig get nodes --no-headers 2>/dev/null | grep -c "Ready" || echo "0")
+            NODE_COUNT=$(oc --kubeconfig=/tmp/hc-kubeconfig get nodes --no-headers 2>/dev/null | { grep -c " Ready" || true; })
             if [[ "$NODE_COUNT" -ge 2 ]]; then
               WORKERS_READY=true
               break
