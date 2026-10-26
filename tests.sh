@@ -372,45 +372,24 @@ EOF
         echo -e "  ${BOLD}⏳ BMF hasn't claimed hosts yet, activating BMHs for agent boot...${RESET}"
       fi
 
-      # Activate BMHs: label with InfraEnv, then switch from customDeploy to live-iso boot.
-      # The infrastructure-operator sets customDeploy: start_assisted_install when it sees
-      # the InfraEnv label, but the IPA image lacks the extension for that deploy step.
-      # Using live-iso boots the discovery ISO directly so the assisted agent starts natively.
+      # Boot BMHs with the discovery ISO via live-iso (no InfraEnv label on BMHs).
+      # Labeling BMHs with InfraEnv triggers the infrastructure-operator to set
+      # customDeploy: start_assisted_install, but the IPA image lacks that extension.
+      # Instead we read the ISO URL from InfraEnv and set spec.image directly.
       INFRAENV_NAME=$(oc get infraenvs -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null | head -1)
       if [[ -z "$INFRAENV_NAME" ]]; then
         INFRAENV_NAME="smoke-infraenv"
       fi
-      for BMH_NAME in $(oc get bmh -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-        oc label bmh "$BMH_NAME" -n "$CAAS_NS" \
-          "infraenvs.agent-install.openshift.io=$INFRAENV_NAME" \
-          --overwrite 2>/dev/null || true
-      done
-      pass "BMHs labeled with InfraEnv"
-
-      # Wait for infrastructure-operator to process the label and get ISO URL
-      echo -e "  ${BOLD}⏳ Waiting for discovery ISO URL (up to 2 min)...${RESET}"
-      ISO_URL=""
-      for i in $(seq 1 12); do
-        ISO_URL=$(oc get infraenv "$INFRAENV_NAME" -n "$CAAS_NS" -o jsonpath='{.status.isoDownloadURL}' 2>/dev/null)
-        if [[ -n "$ISO_URL" ]]; then break; fi
-        sleep 10
-      done
+      ISO_URL=$(oc get infraenv "$INFRAENV_NAME" -n "$CAAS_NS" -o jsonpath='{.status.isoDownloadURL}' 2>/dev/null)
 
       if [[ -n "$ISO_URL" ]]; then
-        # Remove customDeploy (set by infrastructure-operator) and use live-iso instead
         for BMH_NAME in $(oc get bmh -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-          oc patch bmh "$BMH_NAME" -n "$CAAS_NS" --type json \
-            -p '[{"op":"remove","path":"/spec/customDeploy"}]' 2>/dev/null || true
           oc patch bmh "$BMH_NAME" -n "$CAAS_NS" --type merge \
             -p "{\"spec\":{\"image\":{\"url\":\"$ISO_URL\",\"format\":\"live-iso\"},\"online\":true}}" 2>/dev/null || true
         done
         pass "BMHs set with live-iso discovery boot"
       else
-        warn "InfraEnv ISO URL not available, setting BMHs online without image"
-        for BMH_NAME in $(oc get bmh -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-          oc patch bmh "$BMH_NAME" -n "$CAAS_NS" --type merge \
-            -p '{"spec":{"online":true}}' 2>/dev/null || true
-        done
+        fail "InfraEnv ISO URL not available"
       fi
 
       echo -e "  ${BOLD}⏳ Waiting for agents to register (up to 15 min)...${RESET}"
