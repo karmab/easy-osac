@@ -315,6 +315,8 @@ spec:
   online: false
   bootMACAddress: "$MAC"
   automatedCleaningMode: disabled
+  inspect:
+    enabled: false
   bmc:
     address: redfish-virtualmedia://192.168.254.1:9000/redfish/v1/Systems/local/$VM_NAME
     credentialsName: ${VM_NAME}-bmc
