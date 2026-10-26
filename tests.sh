@@ -250,6 +250,11 @@ if [[ "$HAVE_SUBNET" -gt 0 ]]; then
       pass "Compute instance smoke-vm: Running"
     else
       fail "Compute instance smoke-vm: $STATUS (expected Running)"
+      echo -e "  ${BOLD}🔍 Diagnostics:${RESET}"
+      osac get computeinstances -o yaml 2>&1 | grep -A5 "status\|error\|message\|reason" | head -20 || true
+      oc get computeinstances.osac.openshift.io -A -o yaml 2>/dev/null | grep -A5 "status\|error\|message" | head -20 || true
+      oc get vm -A --no-headers 2>/dev/null || echo "    No VirtualMachine CRs"
+      oc get vmi -A --no-headers 2>/dev/null || echo "    No VirtualMachineInstance CRs"
     fi
   else
     fail "Create compute instance smoke-vm"
@@ -338,6 +343,9 @@ if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
         pass "All agents approved"
       else
         warn "Only $AGENT_COUNT agents registered (expected 2)"
+        echo -e "  ${BOLD}🔍 Diagnostics:${RESET}"
+        oc get bmh -n hardware-inventory -o custom-columns=NAME:.metadata.name,STATE:.status.provisioning.state,ONLINE:.spec.online,IMAGE:.spec.image.url 2>/dev/null || true
+        oc get events -n hardware-inventory --sort-by=.lastTimestamp 2>/dev/null | tail -10 || true
       fi
 
       echo -e "  ${BOLD}⏳ Waiting for HostedCluster to appear (up to 5 min)...${RESET}"
