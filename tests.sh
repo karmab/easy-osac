@@ -282,6 +282,10 @@ if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
   for OLD_BMH in $(oc get bmh -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
     oc delete bmh "$OLD_BMH" -n "$CAAS_NS" --ignore-not-found 2>/dev/null || true
   done
+  for OLD_PPI in $(oc get preprovisioningimage -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+    oc patch preprovisioningimage "$OLD_PPI" -n "$CAAS_NS" --type merge -p '{"metadata":{"finalizers":[]}}' 2>/dev/null || true
+    oc delete preprovisioningimage "$OLD_PPI" -n "$CAAS_NS" --ignore-not-found 2>/dev/null || true
+  done
   for OLD_VM in smoke-worker-1 smoke-worker-2; do
     kcli delete vm "$OLD_VM" -y 2>/dev/null || true
   done
@@ -311,12 +315,12 @@ metadata:
   namespace: $CAAS_NS
   labels:
     usage: ci
+  annotations:
+    inspect.metal3.io: disabled
 spec:
   online: false
   bootMACAddress: "$MAC"
   automatedCleaningMode: disabled
-  inspect:
-    enabled: false
   bmc:
     address: redfish-virtualmedia://192.168.254.1:9000/redfish/v1/Systems/local/$VM_NAME
     credentialsName: ${VM_NAME}-bmc

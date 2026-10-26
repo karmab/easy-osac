@@ -378,7 +378,7 @@ TENANT_EOF
 ok "Tenant CR created"
 
 INT_API="fulfillment-internal-api-$NS.$DOMAIN:443"
-SA_TOKEN=$(oc create token admin -n osac --duration=1h --as system:admin 2>/dev/null || echo "")
+SA_TOKEN=$(oc create token admin -n osac --duration=1h 2>&1) || { warn "Failed to create SA token: $SA_TOKEN"; SA_TOKEN=""; }
 
 grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   -d '{"object":{"metadata":{"name":"system"}}}' \
@@ -521,12 +521,12 @@ osac create diskimage --name fedora-41 --source-ref quay.io/containerdisks/fedor
 ok "DiskImage 'fedora-41'"
 
 grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
-  -d '{"object":{"metadata":{"name":"smoke_fedora"},"title":"Smoke Fedora","description":"Fedora 41 for smoke tests","spec_defaults":{"instance_type":{"name":"smoke-2c4g"},"disk_image":{"name":"fedora-41"},"boot_disk":{"size_gib":20,"storage_tier":{"name":"default"}},"run_strategy":"COMPUTE_INSTANCE_RUN_STRATEGY_ALWAYS"}}}' \
+  -d '{"object":{"metadata":{"name":"smoke-fedora"},"title":"Smoke Fedora","description":"Fedora 41 for smoke tests","spec_defaults":{"instance_type":{"name":"smoke-2c4g"},"disk_image":{"name":"fedora-41"},"boot_disk":{"size_gib":20,"storage_tier":{"name":"default"}},"run_strategy":"COMPUTE_INSTANCE_RUN_STRATEGY_ALWAYS"}}}' \
   "$INT_API" osac.private.v1.ComputeInstanceTemplates/Create 2>&1 || true
-ok "ComputeInstanceTemplate 'smoke_fedora' (via private API)"
+ok "ComputeInstanceTemplate 'smoke-fedora' (via private API)"
 
 osac create computeinstancecatalogitem -n fedora-41 --title "Fedora 41" --description "Fedora 41 VM" \
-  --template smoke_fedora --published 2>&1 || true
+  --template smoke-fedora --published 2>&1 || true
 ok "CatalogItem 'fedora-41' published"
 
 osac tenant smoke-test 2>&1
@@ -674,6 +674,7 @@ for NODE_IP in $(oc get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=
 done
 
 GATEWAY_IP=$(ip addr show baremetalfake 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+SSH_PUB_KEY=$(cat /root/.ssh/id_rsa.pub 2>/dev/null || echo "")
 cat <<INFRAENV_EOF | oc apply -f -
 apiVersion: agent-install.openshift.io/v1beta1
 kind: InfraEnv
@@ -685,6 +686,7 @@ metadata:
 spec:
   pullSecretRef:
     name: caas-pull-secret
+  sshAuthorizedKey: "$SSH_PUB_KEY"
   additionalNTPSources:
     - "${GATEWAY_IP:-192.168.254.1}"
 INFRAENV_EOF
