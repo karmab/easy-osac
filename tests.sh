@@ -272,8 +272,72 @@ CAAS_ENABLED=$(osac get clusterversions 2>&1 || echo "")
 if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
   pass "CaaS service enabled (ClusterVersion ${OCP_MINOR})"
 
+  CAAS_NS=hardware-inventory
+
+  # Clean up stale CaaS resources from previous runs
+  echo -e "  ${BOLD}Cleaning up stale CaaS resources...${RESET}"
+  for OLD_AGENT in $(oc get agents -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+    oc delete agent "$OLD_AGENT" -n "$CAAS_NS" --ignore-not-found 2>/dev/null || true
+  done
+  for OLD_BMH in $(oc get bmh -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+    oc delete bmh "$OLD_BMH" -n "$CAAS_NS" --ignore-not-found 2>/dev/null || true
+  done
+  for OLD_VM in smoke-worker-1 smoke-worker-2; do
+    kcli delete vm "$OLD_VM" -y 2>/dev/null || true
+  done
+
+  # Create worker VMs and register as BareMetalHosts (offline, BMF-claimable inventory)
+  echo -e "  ${BOLD}Creating worker VMs and BareMetalHosts...${RESET}"
+  WORKER_MACS=("aa:bb:cc:dd:ee:01" "aa:bb:cc:dd:ee:02")
+  for WORKER_IDX in 1 2; do
+    VM_NAME="smoke-worker-${WORKER_IDX}"
+    MAC="${WORKER_MACS[$((WORKER_IDX - 1))]}"
+
+    kcli create vm \
+      -P numcpus=8 -P memory=16384 -P disks='[100]' \
+      -P nets="[{\"name\":\"baremetalfake\",\"mac\":\"$MAC\"}]" \
+      -P start=false \
+      "$VM_NAME" 2>&1 || true
+
+    oc create secret generic "${VM_NAME}-bmc" -n "$CAAS_NS" \
+      --from-literal=username=admin --from-literal=password=password \
+      --dry-run=client -o yaml | oc apply -f -
+
+    cat <<EOF | oc apply -f -
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: $VM_NAME
+  namespace: $CAAS_NS
+  labels:
+    usage: ci
+spec:
+  online: false
+  bootMACAddress: "$MAC"
+  automatedCleaningMode: disabled
+  bmc:
+    address: redfish-virtualmedia://192.168.254.1:9000/redfish/v1/Systems/local/$VM_NAME
+    credentialsName: ${VM_NAME}-bmc
+    disableCertificateVerification: true
+EOF
+  done
+  CLEANUP+=("kcli delete vm smoke-worker-1 smoke-worker-2 -y 2>/dev/null")
+  pass "Worker VMs + BareMetalHosts created"
+
+  echo -e "  ${BOLD}⏳ Waiting for BMHs to register with BMO (up to 5 min)...${RESET}"
+  for i in $(seq 1 30); do
+    REG_COUNT=$(oc get bmh -n "$CAAS_NS" --no-headers 2>/dev/null | { grep -c -E "registering|available|ready" || true; })
+    if [[ "$REG_COUNT" -ge 2 ]]; then break; fi
+    sleep 10
+  done
+  pass "BareMetalHosts registered with BMO"
+
+  # Pre-create DNS addnhosts file (entries added dynamically later)
+  ADDNHOSTS="/var/lib/libvirt/dnsmasq/baremetalfake.addnhosts"
+  > "$ADDNHOSTS" 2>/dev/null || true
+
   CLCAT_EXISTS=$(osac get clustercatalogitems 2>&1 | { grep -c ocp-ci-small || true; })
-  BMH_COUNT=$(oc get bmh -n hardware-inventory --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  BMH_COUNT=$(oc get bmh -n "$CAAS_NS" --no-headers 2>/dev/null | wc -l | tr -d ' ')
   if [[ "$BMH_COUNT" -ge 2 ]] && [[ "$CLCAT_EXISTS" -gt 0 ]]; then
     pass "BareMetalHosts available ($BMH_COUNT), catalog item exists"
 
@@ -308,30 +372,43 @@ if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
         echo -e "  ${BOLD}⏳ BMF hasn't claimed hosts yet, activating BMHs for agent boot...${RESET}"
       fi
 
-      # Activate BMHs: label with InfraEnv first, wait for ISO URL, then set online
-      INFRAENV_NAME=$(oc get infraenvs -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null | head -1)
+      # Activate BMHs: label with InfraEnv, then switch from customDeploy to live-iso boot.
+      # The infrastructure-operator sets customDeploy: start_assisted_install when it sees
+      # the InfraEnv label, but the IPA image lacks the extension for that deploy step.
+      # Using live-iso boots the discovery ISO directly so the assisted agent starts natively.
+      INFRAENV_NAME=$(oc get infraenvs -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null | head -1)
       if [[ -z "$INFRAENV_NAME" ]]; then
         INFRAENV_NAME="smoke-infraenv"
       fi
-      for BMH_NAME in $(oc get bmh -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-        oc label bmh "$BMH_NAME" -n hardware-inventory \
+      for BMH_NAME in $(oc get bmh -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+        oc label bmh "$BMH_NAME" -n "$CAAS_NS" \
           "infraenvs.agent-install.openshift.io=$INFRAENV_NAME" \
           --overwrite 2>/dev/null || true
       done
       pass "BMHs labeled with InfraEnv"
 
-      # Set discovery ISO URL and boot BMHs
-      ISO_URL=$(oc get infraenv smoke-infraenv -n hardware-inventory -o jsonpath='{.status.isoDownloadURL}' 2>/dev/null)
+      # Wait for infrastructure-operator to process the label and get ISO URL
+      echo -e "  ${BOLD}⏳ Waiting for discovery ISO URL (up to 2 min)...${RESET}"
+      ISO_URL=""
+      for i in $(seq 1 12); do
+        ISO_URL=$(oc get infraenv "$INFRAENV_NAME" -n "$CAAS_NS" -o jsonpath='{.status.isoDownloadURL}' 2>/dev/null)
+        if [[ -n "$ISO_URL" ]]; then break; fi
+        sleep 10
+      done
+
       if [[ -n "$ISO_URL" ]]; then
-        for BMH_NAME in $(oc get bmh -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-          oc patch bmh "$BMH_NAME" -n hardware-inventory --type merge \
-            -p "{\"spec\":{\"image\":{\"url\":\"$ISO_URL\",\"format\":\"iso\"},\"online\":true}}" 2>/dev/null || true
+        # Remove customDeploy (set by infrastructure-operator) and use live-iso instead
+        for BMH_NAME in $(oc get bmh -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+          oc patch bmh "$BMH_NAME" -n "$CAAS_NS" --type json \
+            -p '[{"op":"remove","path":"/spec/customDeploy"}]' 2>/dev/null || true
+          oc patch bmh "$BMH_NAME" -n "$CAAS_NS" --type merge \
+            -p "{\"spec\":{\"image\":{\"url\":\"$ISO_URL\",\"format\":\"live-iso\"},\"online\":true}}" 2>/dev/null || true
         done
-        pass "BMHs set with discovery ISO and online"
+        pass "BMHs set with live-iso discovery boot"
       else
         warn "InfraEnv ISO URL not available, setting BMHs online without image"
-        for BMH_NAME in $(oc get bmh -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-          oc patch bmh "$BMH_NAME" -n hardware-inventory --type merge \
+        for BMH_NAME in $(oc get bmh -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+          oc patch bmh "$BMH_NAME" -n "$CAAS_NS" --type merge \
             -p '{"spec":{"online":true}}' 2>/dev/null || true
         done
       fi
@@ -339,7 +416,7 @@ if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
       echo -e "  ${BOLD}⏳ Waiting for agents to register (up to 15 min)...${RESET}"
       AGENTS_READY=false
       for i in $(seq 1 90); do
-        AGENT_COUNT=$(oc get agents -n hardware-inventory --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        AGENT_COUNT=$(oc get agents -n "$CAAS_NS" --no-headers 2>/dev/null | wc -l | tr -d ' ')
         if [[ "$AGENT_COUNT" -ge 2 ]]; then
           AGENTS_READY=true
           break
@@ -350,16 +427,16 @@ if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
       if $AGENTS_READY; then
         pass "$AGENT_COUNT agents registered"
 
-        for AGENT_NAME in $(oc get agents -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-          oc patch agent "$AGENT_NAME" -n hardware-inventory --type merge \
+        for AGENT_NAME in $(oc get agents -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+          oc patch agent "$AGENT_NAME" -n "$CAAS_NS" --type merge \
             -p '{"spec":{"approved":true}}' 2>/dev/null || true
         done
         pass "All agents approved"
       else
         warn "Only $AGENT_COUNT agents registered (expected 2)"
         echo -e "  ${BOLD}🔍 Diagnostics:${RESET}"
-        oc get bmh -n hardware-inventory -o custom-columns=NAME:.metadata.name,STATE:.status.provisioning.state,ONLINE:.spec.online,IMAGE:.spec.image.url 2>/dev/null || true
-        oc get events -n hardware-inventory --sort-by=.lastTimestamp 2>/dev/null | tail -10 || true
+        oc get bmh -n "$CAAS_NS" -o custom-columns=NAME:.metadata.name,STATE:.status.provisioning.state,ONLINE:.spec.online,IMAGE:.spec.image.url 2>/dev/null || true
+        oc get events -n "$CAAS_NS" --sort-by=.lastTimestamp 2>/dev/null | tail -10 || true
       fi
 
       echo -e "  ${BOLD}⏳ Waiting for HostedCluster to appear (up to 5 min)...${RESET}"
@@ -376,8 +453,8 @@ if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
         HC_NAME=$(echo "$HC" | awk '{print $2}')
 
         # Label agents for NodePool selector binding
-        for AGENT_NAME in $(oc get agents -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-          oc label agent "$AGENT_NAME" -n hardware-inventory \
+        for AGENT_NAME in $(oc get agents -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+          oc label agent "$AGENT_NAME" -n "$CAAS_NS" \
             osac.openshift.io/clusterorder="$HC_NAME" \
             osac.openshift.io/node-set=workers \
             --overwrite 2>/dev/null || true
@@ -406,8 +483,8 @@ DNS_EOF
         fi
 
         # Bind agents to ClusterDeployment to trigger installation
-        for AGENT_NAME in $(oc get agents -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-          oc patch agent "$AGENT_NAME" -n hardware-inventory --type merge \
+        for AGENT_NAME in $(oc get agents -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+          oc patch agent "$AGENT_NAME" -n "$CAAS_NS" --type merge \
             -p "{\"spec\":{\"clusterDeploymentName\":{\"name\":\"${HC_NAME}\",\"namespace\":\"${HC_NS}-${HC_NAME}\"}}}" \
             2>/dev/null || true
         done
@@ -432,7 +509,7 @@ DNS_EOF
 
         # Fix NTP on installed workers (chrony-wait blocks kubelet without NTP)
         GATEWAY_IP=$(ip addr show baremetalfake 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
-        for WORKER_IP in $(oc get agents -n hardware-inventory -o jsonpath='{.items[*].status.inventory.interfaces[0].ipV4Addresses[0]}' 2>/dev/null | tr ' ' '\n' | cut -d/ -f1); do
+        for WORKER_IP in $(oc get agents -n "$CAAS_NS" -o jsonpath='{.items[*].status.inventory.interfaces[0].ipV4Addresses[0]}' 2>/dev/null | tr ' ' '\n' | cut -d/ -f1); do
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 core@"$WORKER_IP" \
             "grep -q '${GATEWAY_IP}' /etc/chrony.conf 2>/dev/null || echo 'server ${GATEWAY_IP} iburst' | sudo tee -a /etc/chrony.conf && sudo systemctl restart chronyd" 2>/dev/null || true
         done

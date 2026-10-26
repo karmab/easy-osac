@@ -699,69 +699,9 @@ for i in $(seq 1 30); do
 done
 
 if [[ -z "$ISO_URL" ]]; then
-  warn "InfraEnv ISO URL not available, skipping CaaS agent provisioning"
+  warn "InfraEnv ISO URL not available"
 else
   ok "Discovery ISO ready"
-
-  echo -e "  ${BOLD}🧹 Cleaning up stale CaaS resources...${RESET}"
-  for OLD_AGENT in $(oc get agents -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-    oc delete agent "$OLD_AGENT" -n "$CAAS_NS" --ignore-not-found 2>/dev/null || true
-  done
-  for OLD_BMH in $(oc get bmh -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-    oc delete bmh "$OLD_BMH" -n "$CAAS_NS" --ignore-not-found 2>/dev/null || true
-  done
-  for OLD_VM in smoke-worker-1 smoke-worker-2; do
-    kcli delete vm "$OLD_VM" -y 2>/dev/null || true
-  done
-  ok "Stale resources cleaned"
-
-  echo -e "  ${BOLD}🖥️  Creating worker VMs and registering as BareMetalHosts...${RESET}"
-  WORKER_MACS=("aa:bb:cc:dd:ee:01" "aa:bb:cc:dd:ee:02")
-  for WORKER_IDX in 1 2; do
-    VM_NAME="smoke-worker-${WORKER_IDX}"
-    MAC="${WORKER_MACS[$((WORKER_IDX - 1))]}"
-
-    kcli create vm \
-      -P numcpus=8 -P memory=16384 -P disks='[100]' \
-      -P nets="[{\"name\":\"baremetalfake\",\"mac\":\"$MAC\"}]" \
-      -P start=false \
-      "$VM_NAME" 2>&1 || true
-
-    oc create secret generic "${VM_NAME}-bmc" -n "$CAAS_NS" \
-      --from-literal=username=admin --from-literal=password=password \
-      --dry-run=client -o yaml | oc apply -f -
-
-    cat <<EOF | oc apply -f -
-apiVersion: metal3.io/v1alpha1
-kind: BareMetalHost
-metadata:
-  name: $VM_NAME
-  namespace: $CAAS_NS
-  labels:
-    usage: ci
-spec:
-  online: false
-  bootMACAddress: "$MAC"
-  automatedCleaningMode: disabled
-  bmc:
-    address: redfish-virtualmedia://192.168.254.1:9000/redfish/v1/Systems/local/$VM_NAME
-    credentialsName: ${VM_NAME}-bmc
-    disableCertificateVerification: true
-EOF
-  done
-  ok "Worker VMs + BareMetalHosts created (offline, BMF-claimable)"
-
-  echo -e "  ${BOLD}⏳ Waiting for BMHs to register with BMO (up to 5 min)...${RESET}"
-  for i in $(seq 1 30); do
-    REG_COUNT=$(oc get bmh -n "$CAAS_NS" --no-headers 2>/dev/null | grep -c -E "registering|available|ready" || echo "0")
-    if [[ "$REG_COUNT" -ge 2 ]]; then break; fi
-    sleep 10
-  done
-  ok "BareMetalHosts registered with BMO"
-
-  # Pre-create DNS addnhosts file (entries added dynamically by tests.sh)
-  ADDNHOSTS="/var/lib/libvirt/dnsmasq/baremetalfake.addnhosts"
-  > "$ADDNHOSTS" 2>/dev/null || true
 fi
 
 # =====================================================================
