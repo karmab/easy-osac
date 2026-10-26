@@ -399,6 +399,13 @@ EOF
         warn "Using fallback InfraEnv from $CAAS_NS"
       fi
 
+      # Patch InfraEnv with NTP source so agents can sync time
+      GATEWAY_IP=$(ip addr show baremetalfake 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+      if [[ -n "$INFRAENV_NAME" ]] && [[ -n "$GATEWAY_IP" ]]; then
+        oc patch infraenv "$INFRAENV_NAME" -n "$AGENT_NS" --type merge \
+          -p "{\"spec\":{\"additionalNTPSources\":[\"${GATEWAY_IP}\"]}}" 2>/dev/null || true
+      fi
+
       if [[ -n "$ISO_URL" ]]; then
         for BMH_NAME in $(oc get bmh -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
           oc patch bmh "$BMH_NAME" -n "$CAAS_NS" --type merge \
@@ -473,6 +480,7 @@ EOF
           cat > "$ADDNHOSTS" <<DNS_EOF
 ${KAS_IP} api.${HC_NAME}.${BASE_DOMAIN}
 ${KAS_IP} api-int.${HC_NAME}.${BASE_DOMAIN}
+${KAS_IP} *.apps.${HC_NAME}.${BASE_DOMAIN}
 DNS_EOF
           kill -HUP $(cat /run/libvirt/network/baremetalfake.pid 2>/dev/null) 2>/dev/null || true
           grep -q "api.${HC_NAME}.${BASE_DOMAIN}" /etc/hosts 2>/dev/null || \
@@ -481,8 +489,8 @@ DNS_EOF
         fi
 
         # Bind agents to ClusterDeployment to trigger installation
-        for AGENT_NAME in $(oc get agents -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-          oc patch agent "$AGENT_NAME" -n "$CAAS_NS" --type merge \
+        for AGENT_NAME in $(oc get agents -n "$AGENT_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+          oc patch agent "$AGENT_NAME" -n "$AGENT_NS" --type merge \
             -p "{\"spec\":{\"clusterDeploymentName\":{\"name\":\"${HC_NAME}\",\"namespace\":\"${HC_NS}-${HC_NAME}\"}}}" \
             2>/dev/null || true
         done
@@ -507,7 +515,7 @@ DNS_EOF
 
         # Fix NTP on installed workers (chrony-wait blocks kubelet without NTP)
         GATEWAY_IP=$(ip addr show baremetalfake 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
-        for WORKER_IP in $(oc get agents -n "$CAAS_NS" -o jsonpath='{.items[*].status.inventory.interfaces[0].ipV4Addresses[0]}' 2>/dev/null | tr ' ' '\n' | cut -d/ -f1); do
+        for WORKER_IP in $(oc get agents -n "$AGENT_NS" -o jsonpath='{.items[*].status.inventory.interfaces[0].ipV4Addresses[0]}' 2>/dev/null | tr ' ' '\n' | cut -d/ -f1); do
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 core@"$WORKER_IP" \
             "grep -q '${GATEWAY_IP}' /etc/chrony.conf 2>/dev/null || echo 'server ${GATEWAY_IP} iburst' | sudo tee -a /etc/chrony.conf && sudo systemctl restart chronyd" 2>/dev/null || true
         done
