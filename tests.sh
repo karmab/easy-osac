@@ -378,15 +378,26 @@ EOF
         echo -e "  ${BOLD}⏳ BMF hasn't claimed hosts yet, activating BMHs for agent boot...${RESET}"
       fi
 
-      # Boot BMHs with the discovery ISO via live-iso (no InfraEnv label on BMHs).
-      # Labeling BMHs with InfraEnv triggers the infrastructure-operator to set
-      # customDeploy: start_assisted_install, but the IPA image lacks that extension.
-      # Instead we read the ISO URL from InfraEnv and set spec.image directly.
-      INFRAENV_NAME=$(oc get infraenvs -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null | head -1)
-      if [[ -z "$INFRAENV_NAME" ]]; then
-        INFRAENV_NAME="smoke-infraenv"
+      # Boot BMHs with the discovery ISO from the order's InfraEnv in osac namespace.
+      # Agents must register in osac where the HostedCluster's agentNamespace points.
+      OSAC_NS="osac"
+      echo -e "  ${BOLD}⏳ Waiting for order InfraEnv ISO (up to 3 min)...${RESET}"
+      ISO_URL=""
+      AGENT_NS="$OSAC_NS"
+      for i in $(seq 1 18); do
+        INFRAENV_NAME=$(oc get infraenvs -n "$OSAC_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null | head -1)
+        if [[ -n "$INFRAENV_NAME" ]]; then
+          ISO_URL=$(oc get infraenv "$INFRAENV_NAME" -n "$OSAC_NS" -o jsonpath='{.status.isoDownloadURL}' 2>/dev/null)
+          if [[ -n "$ISO_URL" ]]; then break; fi
+        fi
+        sleep 10
+      done
+      if [[ -z "$ISO_URL" ]]; then
+        INFRAENV_NAME=$(oc get infraenvs -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null | head -1)
+        ISO_URL=$(oc get infraenv "$INFRAENV_NAME" -n "$CAAS_NS" -o jsonpath='{.status.isoDownloadURL}' 2>/dev/null)
+        AGENT_NS="$CAAS_NS"
+        warn "Using fallback InfraEnv from $CAAS_NS"
       fi
-      ISO_URL=$(oc get infraenv "$INFRAENV_NAME" -n "$CAAS_NS" -o jsonpath='{.status.isoDownloadURL}' 2>/dev/null)
 
       if [[ -n "$ISO_URL" ]]; then
         for BMH_NAME in $(oc get bmh -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
@@ -398,10 +409,12 @@ EOF
         fail "InfraEnv ISO URL not available"
       fi
 
-      echo -e "  ${BOLD}⏳ Waiting for agents to register (up to 15 min)...${RESET}"
+      # Agents register in the namespace of the InfraEnv that generated the ISO
+      AGENT_NS="${OSAC_NS:-$CAAS_NS}"
+      echo -e "  ${BOLD}⏳ Waiting for agents to register in $AGENT_NS (up to 15 min)...${RESET}"
       AGENTS_READY=false
       for i in $(seq 1 90); do
-        AGENT_COUNT=$(oc get agents -n "$CAAS_NS" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        AGENT_COUNT=$(oc get agents -n "$AGENT_NS" --no-headers 2>/dev/null | wc -l | tr -d ' ')
         if [[ "$AGENT_COUNT" -ge 2 ]]; then
           AGENTS_READY=true
           break
@@ -412,8 +425,8 @@ EOF
       if $AGENTS_READY; then
         pass "$AGENT_COUNT agents registered"
 
-        for AGENT_NAME in $(oc get agents -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-          oc patch agent "$AGENT_NAME" -n "$CAAS_NS" --type merge \
+        for AGENT_NAME in $(oc get agents -n "$AGENT_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+          oc patch agent "$AGENT_NAME" -n "$AGENT_NS" --type merge \
             -p '{"spec":{"approved":true}}' 2>/dev/null || true
         done
         pass "All agents approved"
@@ -438,8 +451,8 @@ EOF
         HC_NAME=$(echo "$HC" | awk '{print $2}')
 
         # Label agents for NodePool selector binding
-        for AGENT_NAME in $(oc get agents -n "$CAAS_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-          oc label agent "$AGENT_NAME" -n "$CAAS_NS" \
+        for AGENT_NAME in $(oc get agents -n "$AGENT_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+          oc label agent "$AGENT_NAME" -n "$AGENT_NS" \
             osac.openshift.io/clusterorder="$HC_NAME" \
             osac.openshift.io/node-set=workers \
             --overwrite 2>/dev/null || true
