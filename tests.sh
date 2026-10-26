@@ -26,7 +26,7 @@ cleanup() {
     done
   fi
 }
-trap cleanup EXIT
+# trap cleanup EXIT  # disabled during CI bring-up
 
 DOMAIN=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')
 NS=osac
