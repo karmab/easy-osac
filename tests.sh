@@ -431,12 +431,6 @@ EOF
 
       if $AGENTS_READY; then
         pass "$AGENT_COUNT agents registered"
-
-        for AGENT_NAME in $(oc get agents -n "$AGENT_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-          oc patch agent "$AGENT_NAME" -n "$AGENT_NS" --type merge \
-            -p '{"spec":{"approved":true}}' 2>/dev/null || true
-        done
-        pass "All agents approved"
       else
         warn "Only $AGENT_COUNT agents registered (expected 2)"
         echo -e "  ${BOLD}🔍 Diagnostics:${RESET}"
@@ -487,14 +481,6 @@ DNS_EOF
             echo "${KAS_IP} api.${HC_NAME}.${BASE_DOMAIN}" >> /etc/hosts
           pass "DNS entries created for hosted cluster (api → $KAS_IP)"
         fi
-
-        # Bind agents to ClusterDeployment to trigger installation
-        for AGENT_NAME in $(oc get agents -n "$AGENT_NS" --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-          oc patch agent "$AGENT_NAME" -n "$AGENT_NS" --type merge \
-            -p "{\"spec\":{\"clusterDeploymentName\":{\"name\":\"${HC_NAME}\",\"namespace\":\"${HC_NS}-${HC_NAME}\"}}}" \
-            2>/dev/null || true
-        done
-        pass "Applied CaaS agent binding workarounds"
 
         echo -e "  ${BOLD}⏳ Waiting for control plane to become available (up to 10 min)...${RESET}"
         CP_AVAILABLE=false
