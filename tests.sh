@@ -320,18 +320,21 @@ if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
       done
       pass "BMHs labeled with InfraEnv"
 
-      echo -e "  ${BOLD}⏳ Waiting for discovery ISO URL on BMHs (up to 2 min)...${RESET}"
-      for _iso in $(seq 1 12); do
-        ISO_SET=$(oc get bmh -n hardware-inventory -o jsonpath='{.items[*].spec.image.url}' 2>/dev/null | tr -s ' ')
-        if [[ -n "$ISO_SET" ]] && [[ "$ISO_SET" != " " ]]; then break; fi
-        sleep 10
-      done
-
-      for BMH_NAME in $(oc get bmh -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
-        oc patch bmh "$BMH_NAME" -n hardware-inventory --type merge \
-          -p '{"spec":{"online":true}}' 2>/dev/null || true
-      done
-      pass "BMHs set online (ISO URL ready)"
+      # Set discovery ISO URL and boot BMHs
+      ISO_URL=$(oc get infraenv smoke-infraenv -n hardware-inventory -o jsonpath='{.status.isoDownloadURL}' 2>/dev/null)
+      if [[ -n "$ISO_URL" ]]; then
+        for BMH_NAME in $(oc get bmh -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+          oc patch bmh "$BMH_NAME" -n hardware-inventory --type merge \
+            -p "{\"spec\":{\"image\":{\"url\":\"$ISO_URL\",\"format\":\"iso\"},\"online\":true}}" 2>/dev/null || true
+        done
+        pass "BMHs set with discovery ISO and online"
+      else
+        warn "InfraEnv ISO URL not available, setting BMHs online without image"
+        for BMH_NAME in $(oc get bmh -n hardware-inventory --no-headers -o custom-columns=NAME:.metadata.name 2>/dev/null); do
+          oc patch bmh "$BMH_NAME" -n hardware-inventory --type merge \
+            -p '{"spec":{"online":true}}' 2>/dev/null || true
+        done
+      fi
 
       echo -e "  ${BOLD}⏳ Waiting for agents to register (up to 15 min)...${RESET}"
       AGENTS_READY=false

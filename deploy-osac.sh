@@ -520,27 +520,13 @@ osac tenant shared 2>&1
 osac create diskimage --name fedora-41 --source-ref quay.io/containerdisks/fedora:41 --architecture amd64 2>&1 || true
 ok "DiskImage 'fedora-41'"
 
-cat <<'TMPL_EOF' | osac create -f - 2>&1 || true
-"@type": type.googleapis.com/osac.public.v1.ComputeInstanceTemplate
-metadata:
-  name: smoke-fedora
-title: Smoke Fedora
-description: Fedora 41 for smoke tests
-spec_defaults:
-  instance_type:
-    name: smoke-2c4g
-  disk_image:
-    name: fedora-41
-  boot_disk:
-    size_gib: 20
-    storage_tier:
-      name: default
-  run_strategy: COMPUTE_INSTANCE_RUN_STRATEGY_ALWAYS
-TMPL_EOF
-ok "ComputeInstanceTemplate 'smoke-fedora'"
+grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
+  -d '{"object":{"metadata":{"name":"smoke_fedora"},"title":"Smoke Fedora","description":"Fedora 41 for smoke tests","spec_defaults":{"instance_type":{"name":"smoke-2c4g"},"disk_image":{"name":"fedora-41"},"boot_disk":{"size_gib":20,"storage_tier":{"name":"default"}},"run_strategy":"COMPUTE_INSTANCE_RUN_STRATEGY_ALWAYS"}}}' \
+  "$INT_API" osac.private.v1.ComputeInstanceTemplates/Create 2>&1 || true
+ok "ComputeInstanceTemplate 'smoke_fedora' (via private API)"
 
 osac create computeinstancecatalogitem -n fedora-41 --title "Fedora 41" --description "Fedora 41 VM" \
-  --template smoke-fedora --published 2>&1 || true
+  --template smoke_fedora --published 2>&1 || true
 ok "CatalogItem 'fedora-41' published"
 
 osac tenant smoke-test 2>&1
