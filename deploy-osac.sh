@@ -521,7 +521,7 @@ osac create diskimage --name fedora-41 --source-ref quay.io/containerdisks/fedor
 ok "DiskImage 'fedora-41'"
 
 grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
-  -d '{"object":{"metadata":{"name":"smoke-fedora"},"title":"Smoke Fedora","description":"Fedora 41 for smoke tests","spec_defaults":{"instance_type":{"name":"smoke-2c4g"},"disk_image":{"name":"fedora-41"},"boot_disk":{"size_gib":20,"storage_tier":{"name":"default"}},"run_strategy":"COMPUTE_INSTANCE_RUN_STRATEGY_ALWAYS"}}}' \
+  -d '{"object":{"id":"osac.templates.smoke_fedora","metadata":{"name":"smoke-fedora"},"title":"Smoke Fedora","description":"Fedora 41 for smoke tests","spec_defaults":{"instance_type":{"name":"smoke-2c4g"},"disk_image":{"name":"fedora-41"},"boot_disk":{"size_gib":20,"storage_tier":{"name":"default"}},"run_strategy":"COMPUTE_INSTANCE_RUN_STRATEGY_ALWAYS"}}}' \
   "$INT_API" osac.private.v1.ComputeInstanceTemplates/Create 2>&1 || true
 ok "ComputeInstanceTemplate 'smoke-fedora' (via private API)"
 

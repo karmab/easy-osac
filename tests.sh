@@ -427,7 +427,7 @@ EOF
       echo -e "  ${BOLD}⏳ Waiting for HostedCluster to appear (up to 5 min)...${RESET}"
       HC=""
       for i in $(seq 1 30); do
-        HC=$(oc get hostedclusters -A --no-headers 2>/dev/null | grep smoke-cluster || echo "")
+        HC=$(oc get hostedclusters -A -l osac.openshift.io/clusterorder --no-headers 2>/dev/null | head -1)
         if [[ -n "$HC" ]]; then break; fi
         sleep 10
       done
