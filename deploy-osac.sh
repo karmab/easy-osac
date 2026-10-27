@@ -161,9 +161,10 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace --force-conf
   --set global.services.bmaas.enabled=true \
   --set global.services.caas.enabled=true \
   --set fulfillment.clusterFulfillment.config.DNS_CLASS=dns.kcli.dns \
-  --set fulfillment.clusterFulfillment.secret.KCLI_SSH_PRIVATE_KEY="$(cat /root/.ssh/id_rsa)" \
+  --set fulfillment.clusterFulfillment.config.KCLI_CLIENT=local \
   --set fulfillment.clusterFulfillment.config.KCLI_HOST="$(hostname -f)" \
   --set fulfillment.clusterFulfillment.config.KCLI_USER=root \
+  --set fulfillment.clusterFulfillment.secret.KCLI_SSH_PRIVATE_KEY="$(cat /root/.ssh/id_rsa)" \
   --timeout 15m || warn "helm exited non-zero (AAP hook may have failed — non-blocking)"
 ok "osac helm release submitted"
 
