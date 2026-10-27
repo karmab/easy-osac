@@ -272,6 +272,26 @@ CAAS_ENABLED=$(osac get clusterversions 2>&1 || echo "")
 if echo "$CAAS_ENABLED" | grep -q "${OCP_MINOR}"; then
   pass "CaaS service enabled (ClusterVersion ${OCP_MINOR})"
 
+  # Disable the apps wildcard DNS validation — dnsmasq addnhosts can't do wildcards
+  # and the agent checks a random canary subdomain under *.apps
+  SKIP_VAL="apps-domain-name-resolved-correctly"
+  CURRENT_SKIP=$(oc get agentserviceconfig agent -o jsonpath='{.metadata.annotations.unsupported\.agent-install\.openshift\.io/assisted-service-configmap}' 2>/dev/null || echo "")
+  if ! echo "$CURRENT_SKIP" | grep -q "$SKIP_VAL"; then
+    oc annotate agentserviceconfig agent \
+      "unsupported.agent-install.openshift.io/assisted-service-configmap=assisted-service-extra" \
+      --overwrite 2>/dev/null || true
+    cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: assisted-service-extra
+  namespace: multicluster-engine
+data:
+  DISABLED_HOST_VALIDATIONS: "$SKIP_VAL"
+EOF
+    echo -e "  ${BOLD}Disabled apps DNS validation (random canary check incompatible with addnhosts)${RESET}"
+  fi
+
   CAAS_NS=hardware-inventory
 
   # Clean up stale CaaS resources from previous runs
@@ -476,16 +496,17 @@ EOF
         done
         if [[ -n "$KAS_IP" ]]; then
           BASE_DOMAIN=$(oc get hostedcluster "$HC_NAME" -n "$HC_NS" -o jsonpath='{.spec.dns.baseDomain}' 2>/dev/null)
+
+          # Specific host entries via addnhosts (reloaded on SIGHUP)
           ADDNHOSTS="/var/lib/libvirt/dnsmasq/baremetalfake.addnhosts"
           cat > "$ADDNHOSTS" <<DNS_EOF
 ${KAS_IP} api.${HC_NAME}.${BASE_DOMAIN}
 ${KAS_IP} api-int.${HC_NAME}.${BASE_DOMAIN}
-${KAS_IP} *.apps.${HC_NAME}.${BASE_DOMAIN}
 DNS_EOF
           kill -HUP $(cat /run/libvirt/network/baremetalfake.pid 2>/dev/null) 2>/dev/null || true
           grep -q "api.${HC_NAME}.${BASE_DOMAIN}" /etc/hosts 2>/dev/null || \
             echo "${KAS_IP} api.${HC_NAME}.${BASE_DOMAIN}" >> /etc/hosts
-          pass "DNS entries created for hosted cluster (api → $KAS_IP)"
+          pass "DNS entries created for hosted cluster (api + api-int → $KAS_IP)"
         fi
 
         echo -e "  ${BOLD}⏳ Waiting for control plane to become available (up to 10 min)...${RESET}"

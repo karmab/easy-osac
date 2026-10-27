@@ -116,6 +116,21 @@ echo -e "  ${BOLD}⏳ Waiting for assisted-service...${RESET}"
 oc wait deployment assisted-service -n multicluster-engine --for=condition=Available --timeout=600s
 ok "assisted-service ready"
 
+echo -e "  ${BOLD}Disabling apps DNS validation (incompatible with libvirt dnsmasq)...${RESET}"
+cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: assisted-service-extra
+  namespace: multicluster-engine
+data:
+  DISABLED_HOST_VALIDATIONS: "apps-domain-name-resolved-correctly"
+EOF
+oc annotate agentserviceconfig agent \
+  "unsupported.agent-install.openshift.io/assisted-service-configmap=assisted-service-extra" \
+  --overwrite
+ok "apps DNS validation disabled"
+
 # =====================================================================
 step "4/7" "AAP manifest"
 
