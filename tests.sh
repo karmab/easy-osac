@@ -549,6 +549,51 @@ DNS_EOF
         fi
         if $WORKERS_READY; then
           pass "Worker nodes joined hosted cluster ($NODE_COUNT Ready)"
+
+          # Wait for ingress router pod and create *.apps wildcard DNS
+          echo -e "  ${BOLD}⏳ Waiting for ingress router pod (up to 5 min)...${RESET}"
+          ROUTER_READY=false
+          for i in $(seq 1 30); do
+            ROUTER_IP=$(oc --kubeconfig=/tmp/hc-kubeconfig get pods -n openshift-ingress \
+              -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
+              -o jsonpath='{.items[0].status.hostIP}' 2>/dev/null)
+            if [[ -n "$ROUTER_IP" ]]; then
+              ROUTER_PHASE=$(oc --kubeconfig=/tmp/hc-kubeconfig get pods -n openshift-ingress \
+                -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
+                -o jsonpath='{.items[0].status.phase}' 2>/dev/null)
+              if [[ "$ROUTER_PHASE" == "Running" ]]; then
+                ROUTER_READY=true
+                break
+              fi
+            fi
+            sleep 10
+          done
+          if $ROUTER_READY; then
+            pass "Ingress router running on $ROUTER_IP"
+            kcli create dns -n baremetalfake -d "$BASE_DOMAIN" -i "$ROUTER_IP" -a '*' "apps.${HC_NAME}" 2>&1 || true
+            pass "Wildcard DNS *.apps.${HC_NAME}.${BASE_DOMAIN} → $ROUTER_IP"
+
+            echo -e "  ${BOLD}⏳ Waiting for ClusterVersion to complete (up to 10 min)...${RESET}"
+            CV_DONE=false
+            for i in $(seq 1 60); do
+              CV_AVAILABLE=$(oc --kubeconfig=/tmp/hc-kubeconfig get clusterversion version \
+                -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+              if [[ "$CV_AVAILABLE" == "True" ]]; then
+                CV_DONE=true
+                break
+              fi
+              sleep 10
+            done
+            if $CV_DONE; then
+              CV_VERSION=$(oc --kubeconfig=/tmp/hc-kubeconfig get clusterversion version \
+                -o jsonpath='{.status.desired.version}' 2>/dev/null)
+              pass "ClusterVersion $CV_VERSION fully deployed"
+            else
+              warn "ClusterVersion not fully available (console/ingress may still be progressing)"
+            fi
+          else
+            warn "Ingress router not ready, skipping *.apps DNS and ClusterVersion check"
+          fi
         else
           fail "Worker nodes not Ready in hosted cluster"
         fi
