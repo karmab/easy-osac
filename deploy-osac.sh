@@ -160,6 +160,8 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace --force-conf
   --set lvms.enabled=false \
   --set global.services.bmaas.enabled=true \
   --set global.services.caas.enabled=true \
+  --set configAsCode.projectGitUri=https://github.com/karmab/osac.git \
+  --set configAsCode.projectGitBranch=kcli-dns-provider \
   --set fulfillment.clusterFulfillment.config.DNS_CLASS=dns.kcli.dns \
   --set fulfillment.clusterFulfillment.config.KCLI_CLIENT=local \
   --set fulfillment.clusterFulfillment.config.KCLI_HOST="$(hostname -f)" \
