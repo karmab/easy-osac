@@ -533,12 +533,12 @@ DNS_EOF
             "grep -q '${GATEWAY_IP}' /etc/chrony.conf 2>/dev/null || echo 'server ${GATEWAY_IP} iburst' | sudo tee -a /etc/chrony.conf && sudo systemctl restart chronyd" 2>/dev/null || true
         done
 
-        echo -e "  ${BOLD}⏳ Waiting for worker nodes to join hosted cluster (up to 10 min)...${RESET}"
+        echo -e "  ${BOLD}⏳ Waiting for worker nodes to join hosted cluster (up to 20 min)...${RESET}"
         HC_KUBECONFIG=$(oc get secret "${HC_NAME}-admin-kubeconfig" -n "${HC_NS}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d)
         WORKERS_READY=false
         if [[ -n "$HC_KUBECONFIG" ]]; then
           echo "$HC_KUBECONFIG" > /tmp/hc-kubeconfig
-          for i in $(seq 1 60); do
+          for i in $(seq 1 120); do
             NODE_COUNT=$(oc --kubeconfig=/tmp/hc-kubeconfig get nodes --no-headers 2>/dev/null | { grep -c " Ready" || true; })
             if [[ "$NODE_COUNT" -ge 2 ]]; then
               WORKERS_READY=true
