@@ -23,7 +23,7 @@ step "1/7" "Pre-requisites (CRDs, repos, chart deps)"
 if [[ -d osac ]]; then
   cd osac && git pull && cd osac-installer
 else
-  git clone -b kcli-dns-provider https://github.com/karmab/osac.git
+  git clone https://github.com/osac-project/osac.git
   cd osac/osac-installer
 fi
 
@@ -160,13 +160,6 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace --force-conf
   --set lvms.enabled=false \
   --set global.services.bmaas.enabled=true \
   --set global.services.caas.enabled=true \
-  --set configAsCode.projectGitUri=https://github.com/karmab/osac.git \
-  --set configAsCode.projectGitBranch=kcli-dns-provider \
-  --set fulfillment.clusterFulfillment.config.DNS_CLASS=dns.kcli.dns \
-  --set fulfillment.clusterFulfillment.config.KCLI_CLIENT=local \
-  --set fulfillment.clusterFulfillment.config.KCLI_HOST="$(hostname -f)" \
-  --set fulfillment.clusterFulfillment.config.KCLI_USER=root \
-  --set fulfillment.clusterFulfillment.secret.KCLI_SSH_PRIVATE_KEY="$(cat /root/.ssh/id_rsa)" \
   --timeout 15m || warn "helm exited non-zero (AAP hook may have failed — non-blocking)"
 ok "osac helm release submitted"
 
