@@ -597,14 +597,15 @@ else
 fi
 
 osac tenant smoke-test 2>&1
+CLUSTER_TEMPLATE="${CLUSTER_TEMPLATE:-ocp-ci-small}"
 CLCAT_RESULT=$(cat <<CLCAT_EOF | osac create -f - 2>&1 || true
 "@type": type.googleapis.com/osac.public.v1.ClusterCatalogItem
 metadata:
-  name: ocp-ci-small
-title: CI OpenShift Cluster
+  name: ${CLUSTER_TEMPLATE}
+title: CI OpenShift Cluster (${CLUSTER_TEMPLATE})
 description: "OpenShift ${OCP_MINOR} cluster for CI with 2 BM workers"
 template:
-  name: ocp-ci-small
+  name: ${CLUSTER_TEMPLATE}
   shared: true
 published: true
 fields:
@@ -619,14 +620,14 @@ fields:
               shared: true
 CLCAT_EOF
 )
-if echo "$CLCAT_RESULT" | grep -qi "created\|already exists\|ocp-ci-small"; then
-  ok "ClusterCatalogItem 'ocp-ci-small' published"
+if echo "$CLCAT_RESULT" | grep -qi "created\|already exists\|${CLUSTER_TEMPLATE}"; then
+  ok "ClusterCatalogItem '${CLUSTER_TEMPLATE}' published"
 else
   warn "ClusterCatalogItem creation may have failed: $CLCAT_RESULT"
 fi
 
 CLCAT_CHECK=$(osac get clustercatalogitems 2>&1 || echo "")
-if echo "$CLCAT_CHECK" | grep -q "ocp-ci-small"; then
+if echo "$CLCAT_CHECK" | grep -q "${CLUSTER_TEMPLATE}"; then
   ok "ClusterCatalogItem verified"
 else
   warn "ClusterCatalogItem not found — CaaS cluster test will be skipped"

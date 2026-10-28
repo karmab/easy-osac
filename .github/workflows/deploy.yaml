@@ -27,6 +27,10 @@ on:
         required: true
         default: true
         type: boolean
+      CLUSTER_TEMPLATE:
+        description: "ClusterCatalogItem template (ocp-ci-small, ocp-4-20-ai-maas)"
+        required: false
+        default: ocp-ci-small
 
 env:
  HOME: /root
@@ -34,6 +38,7 @@ env:
  CLUSTER: ${{github.event.inputs.CLUSTER}}
  KUBECONFIG: ${{github.event.inputs.KUBECONFIG}}
  PULL_SECRET: ${{github.event.inputs.PULL_SECRET}}
+ CLUSTER_TEMPLATE: ${{github.event.inputs.CLUSTER_TEMPLATE || 'ocp-ci-small'}}
 
 jobs:
   deploy-cluster:
@@ -51,7 +56,7 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - run: git pull origin ${GITHUB_REF##*/}
-    - run: KUBECONFIG=${KUBECONFIG:-/root/.kcli/clusters/$CLUSTER/auth/kubeconfig} bash deploy-osac.sh
+    - run: KUBECONFIG=${KUBECONFIG:-/root/.kcli/clusters/$CLUSTER/auth/kubeconfig} CLUSTER_TEMPLATE=$CLUSTER_TEMPLATE bash deploy-osac.sh
 
   run-tests:
     if: ${{ always() && inputs.RUN_TESTS && !failure() }}
@@ -60,4 +65,4 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - run: git pull origin ${GITHUB_REF##*/}
-    - run: KUBECONFIG=${KUBECONFIG:-/root/.kcli/clusters/$CLUSTER/auth/kubeconfig} bash tests.sh
+    - run: KUBECONFIG=${KUBECONFIG:-/root/.kcli/clusters/$CLUSTER/auth/kubeconfig} CLUSTER_TEMPLATE=$CLUSTER_TEMPLATE bash tests.sh

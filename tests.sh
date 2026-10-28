@@ -362,13 +362,14 @@ EOF
   ADDNHOSTS="/var/lib/libvirt/dnsmasq/baremetalfake.addnhosts"
   > "$ADDNHOSTS" 2>/dev/null || true
 
-  CLCAT_EXISTS=$(osac get clustercatalogitems 2>&1 | { grep -c ocp-ci-small || true; })
+  CLUSTER_TEMPLATE="${CLUSTER_TEMPLATE:-ocp-ci-small}"
+  CLCAT_EXISTS=$(osac get clustercatalogitems 2>&1 | { grep -c "${CLUSTER_TEMPLATE}" || true; })
   BMH_COUNT=$(oc get bmh -n "$CAAS_NS" --no-headers 2>/dev/null | wc -l | tr -d ' ')
   if [[ "$BMH_COUNT" -ge 2 ]] && [[ "$CLCAT_EXISTS" -gt 0 ]]; then
     pass "BareMetalHosts available ($BMH_COUNT), catalog item exists"
 
     osac create cluster -n smoke-cluster \
-      --catalog-item ocp-ci-small \
+      --catalog-item "${CLUSTER_TEMPLATE}" \
       --pull-secret ci-pull-secret \
       --ssh-public-key-file /root/.ssh/id_rsa.pub \
       --version "${OCP_MINOR}.0" \
@@ -603,7 +604,7 @@ EOF
     fi
   else
     if [[ "$CLCAT_EXISTS" -eq 0 ]]; then
-      fail "ClusterCatalogItem ocp-ci-small not found, skipping CaaS cluster creation"
+      fail "ClusterCatalogItem ${CLUSTER_TEMPLATE} not found, skipping CaaS cluster creation"
     else
       fail "Not enough BareMetalHosts ($BMH_COUNT < 2), skipping CaaS cluster creation"
     fi
