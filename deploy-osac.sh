@@ -27,6 +27,10 @@ else
   cd osac/osac-installer
 fi
 
+# Workaround: fix "type: boolean" → "type: bool" in MaaS template (PR #2059)
+sed -i 's/type: boolean/type: bool/g' \
+  ../osac-aap/collections/ansible_collections/osac/templates/roles/ocp_4_20_ai_maas/meta/osac.yaml 2>/dev/null || true
+
 helm repo add topolvm https://topolvm.github.io/topolvm --force-update
 helm repo add jetstack https://charts.jetstack.io --force-update
 ok "Helm repos added"
