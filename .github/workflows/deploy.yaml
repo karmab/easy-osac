@@ -32,14 +32,10 @@ on:
         required: false
         default: ocp-ci-small
       USE_CUSTOM_IMAGE:
-        description: "Use custom AAP EE image"
+        description: "Use custom AAP EE image (quay.io/karmab/osac-aap:latest)"
         required: false
         default: false
         type: boolean
-      CUSTOM_IMAGE:
-        description: "Custom AAP EE image"
-        required: false
-        default: quay.io/karmab/osac-aap:latest
 
 env:
  HOME: /root
@@ -49,7 +45,6 @@ env:
  PULL_SECRET: ${{github.event.inputs.PULL_SECRET}}
  CLUSTER_TEMPLATE: ${{github.event.inputs.CLUSTER_TEMPLATE || 'ocp-ci-small'}}
  USE_CUSTOM_IMAGE: ${{github.event.inputs.USE_CUSTOM_IMAGE || 'false'}}
- CUSTOM_IMAGE: ${{github.event.inputs.CUSTOM_IMAGE || 'quay.io/karmab/osac-aap:latest'}}
 
 jobs:
   deploy-cluster:
@@ -67,7 +62,7 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - run: git pull origin ${GITHUB_REF##*/}
-    - run: KUBECONFIG=${KUBECONFIG:-/root/.kcli/clusters/$CLUSTER/auth/kubeconfig} CLUSTER_TEMPLATE=$CLUSTER_TEMPLATE USE_CUSTOM_IMAGE=$USE_CUSTOM_IMAGE CUSTOM_IMAGE=$CUSTOM_IMAGE bash deploy-osac.sh
+    - run: KUBECONFIG=${KUBECONFIG:-/root/.kcli/clusters/$CLUSTER/auth/kubeconfig} CLUSTER_TEMPLATE=$CLUSTER_TEMPLATE USE_CUSTOM_IMAGE=$USE_CUSTOM_IMAGE bash deploy-osac.sh
 
   run-tests:
     if: ${{ always() && inputs.RUN_TESTS && !failure() }}

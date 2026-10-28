@@ -564,6 +564,7 @@ CV_RESULT=$(grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
 ok "ClusterVersion '${OCP_MINOR}.0' in smoke-test tenant (with disk image, default)"
 
 if [[ "${USE_CUSTOM_IMAGE:-false}" == "true" ]]; then
+  CUSTOM_IMAGE="quay.io/karmab/osac-aap:latest"
   echo -e "  ${BOLD}🔧 Overriding EE image to ${CUSTOM_IMAGE}...${RESET}"
   oc exec -n "$NS" deploy/osac-aap-controller-task -c osac-aap-controller-task -- \
     curl -sf -X PATCH "http://osac-aap/api/controller/v2/execution_environments/4/" \
