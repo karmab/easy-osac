@@ -534,12 +534,12 @@ DNS_EOF
         done
 
         echo -e "  ${BOLD}⏳ Waiting for worker nodes to join hosted cluster (up to 20 min)...${RESET}"
-        HC_KUBECONFIG=$(oc get secret "${HC_NAME}-admin-kubeconfig" -n "${HC_NS}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d)
+        HC_KUBECONFIG=$({ oc get secret "${HC_NAME}-admin-kubeconfig" -n "${HC_NS}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null || true; } | base64 -d 2>/dev/null || true)
         WORKERS_READY=false
         if [[ -n "$HC_KUBECONFIG" ]]; then
           echo "$HC_KUBECONFIG" > /tmp/hc-kubeconfig
           for i in $(seq 1 120); do
-            NODE_COUNT=$(oc --kubeconfig=/tmp/hc-kubeconfig get nodes --no-headers 2>/dev/null | { grep -c " Ready" || true; })
+            NODE_COUNT=$({ oc --kubeconfig=/tmp/hc-kubeconfig get nodes --no-headers 2>/dev/null || true; } | { grep -c " Ready" || true; })
             if [[ "$NODE_COUNT" -ge 2 ]]; then
               WORKERS_READY=true
               break
@@ -556,11 +556,11 @@ DNS_EOF
           for i in $(seq 1 30); do
             ROUTER_IP=$(oc --kubeconfig=/tmp/hc-kubeconfig get pods -n openshift-ingress \
               -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
-              -o jsonpath='{.items[0].status.hostIP}' 2>/dev/null)
+              -o jsonpath='{.items[0].status.hostIP}' 2>/dev/null || true)
             if [[ -n "$ROUTER_IP" ]]; then
               ROUTER_PHASE=$(oc --kubeconfig=/tmp/hc-kubeconfig get pods -n openshift-ingress \
                 -l ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default \
-                -o jsonpath='{.items[0].status.phase}' 2>/dev/null)
+                -o jsonpath='{.items[0].status.phase}' 2>/dev/null || true)
               if [[ "$ROUTER_PHASE" == "Running" ]]; then
                 ROUTER_READY=true
                 break
@@ -573,11 +573,16 @@ DNS_EOF
             kcli create dns -n baremetalfake -d "$BASE_DOMAIN" -i "$ROUTER_IP" -a '*' "apps.${HC_NAME}" 2>&1 || true
             pass "Wildcard DNS *.apps.${HC_NAME}.${BASE_DOMAIN} → $ROUTER_IP"
 
+            # kcli wildcard DNS bounces the libvirt network + restarts libvirtd;
+            # wait for connectivity to recover before hitting the API server
+            echo -e "  ${BOLD}⏳ Waiting for API server to recover after network bounce (30s)...${RESET}"
+            sleep 30
+
             echo -e "  ${BOLD}⏳ Waiting for ClusterVersion to complete (up to 10 min)...${RESET}"
             CV_DONE=false
             for i in $(seq 1 60); do
               CV_AVAILABLE=$(oc --kubeconfig=/tmp/hc-kubeconfig get clusterversion version \
-                -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)
+                -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || true)
               if [[ "$CV_AVAILABLE" == "True" ]]; then
                 CV_DONE=true
                 break
@@ -586,7 +591,7 @@ DNS_EOF
             done
             if $CV_DONE; then
               CV_VERSION=$(oc --kubeconfig=/tmp/hc-kubeconfig get clusterversion version \
-                -o jsonpath='{.status.desired.version}' 2>/dev/null)
+                -o jsonpath='{.status.desired.version}' 2>/dev/null || true)
               pass "ClusterVersion $CV_VERSION fully deployed"
             else
               warn "ClusterVersion not fully available (console/ingress may still be progressing)"
