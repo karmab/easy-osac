@@ -563,13 +563,14 @@ CV_RESULT=$(grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
   "$INT_API" osac.private.v1.ClusterVersions/Create 2>&1 || true)
 ok "ClusterVersion '${OCP_MINOR}.0' in smoke-test tenant (with disk image, default)"
 
-# TEMPORARY: override EE image with fixed MaaS template types (remove after PR #2059 merges)
-echo -e "  ${BOLD}🔧 Overriding EE image (PR #2059 workaround)...${RESET}"
-oc exec -n "$NS" deploy/osac-aap-controller-task -c osac-aap-controller-task -- \
-  curl -sf -X PATCH "http://osac-aap/api/controller/v2/execution_environments/4/" \
-  -u "admin:$AAP_ADMIN_PASS" -H "Content-Type: application/json" \
-  -d '{"image": "quay.io/karmab/osac-aap:latest"}' >/dev/null 2>&1 || true
-ok "EE image overridden to quay.io/karmab/osac-aap:latest"
+if [[ "${USE_CUSTOM_IMAGE:-false}" == "true" ]]; then
+  echo -e "  ${BOLD}🔧 Overriding EE image to ${CUSTOM_IMAGE}...${RESET}"
+  oc exec -n "$NS" deploy/osac-aap-controller-task -c osac-aap-controller-task -- \
+    curl -sf -X PATCH "http://osac-aap/api/controller/v2/execution_environments/4/" \
+    -u "admin:$AAP_ADMIN_PASS" -H "Content-Type: application/json" \
+    -d "{\"image\": \"${CUSTOM_IMAGE}\"}" >/dev/null 2>&1 || true
+  ok "EE image overridden to ${CUSTOM_IMAGE}"
+fi
 
 # Publish cluster templates via AAP (Helm hook may not have run if release failed)
 echo -e "  ${BOLD}📦 Publishing cluster templates...${RESET}"
