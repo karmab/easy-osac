@@ -163,6 +163,7 @@ helm upgrade --install osac charts/osac -n "$NS" --create-namespace --force-conf
   --set aap.instanceGroups.clusterFulfillment.enabled=true \
   --set "aap.instanceGroups.clusterFulfillment.config.NETWORK_STEPS_COLLECTION=ci.steps" \
   --set "aap.instanceGroups.clusterFulfillment.config.DNS_CLASS=dns.noop.dns" \
+  --set "aap.instanceGroups.clusterFulfillment.config.EXTERNAL_ACCESS_SUPPORTED_BASE_DOMAINS=none" \
   --timeout 15m || warn "helm exited non-zero (AAP hook may have failed — non-blocking)"
 ok "osac helm release submitted"
 
