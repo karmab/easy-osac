@@ -318,7 +318,7 @@ EOF
     MAC="${WORKER_MACS[$((WORKER_IDX - 1))]}"
 
     kcli create vm \
-      -P numcpus=8 -P memory=16384 -P disks='[100]' \
+      -P numcpus=32 -P memory=98304 -P disks='[100,100]' \
       -P nets="[{\"name\":\"baremetalfake\",\"mac\":\"$MAC\"}]" \
       -P start=false \
       "$VM_NAME" 2>&1 || true
@@ -591,6 +591,9 @@ EOF
                 echo -e "  ${BOLD}⏳ Installing MetalLB on hosted cluster...${RESET}"
                 KUBECONFIG=/tmp/hc-kubeconfig kcli create app metallb-operator -P metallb_ranges=[192.168.254.200-192.168.254.216]
                 pass "MetalLB installed on hosted cluster"
+                echo -e "  ${BOLD}⏳ Installing LVMS on hosted cluster...${RESET}"
+                KUBECONFIG=/tmp/hc-kubeconfig kcli create app lvms-operator
+                pass "LVMS installed on hosted cluster"
               fi
             else
               warn "ClusterVersion not fully available (console/ingress may still be progressing)"
