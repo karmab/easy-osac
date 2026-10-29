@@ -587,6 +587,11 @@ EOF
               CV_VERSION=$(oc --kubeconfig=/tmp/hc-kubeconfig get clusterversion version \
                 -o jsonpath='{.status.desired.version}' 2>/dev/null || true)
               pass "ClusterVersion $CV_VERSION fully deployed"
+              if [[ "${CLUSTER_TEMPLATE}" == *"maas"* ]]; then
+                echo -e "  ${BOLD}⏳ Installing MetalLB on hosted cluster...${RESET}"
+                KUBECONFIG=/tmp/hc-kubeconfig kcli create app metallb-operator -P metallb_ranges=[192.168.254.200-192.168.254.216]
+                pass "MetalLB installed on hosted cluster"
+              fi
             else
               warn "ClusterVersion not fully available (console/ingress may still be progressing)"
             fi
