@@ -368,12 +368,17 @@ EOF
   if [[ "$BMH_COUNT" -ge 2 ]] && [[ "$CLCAT_EXISTS" -gt 0 ]]; then
     pass "BareMetalHosts available ($BMH_COUNT), catalog item exists"
 
-    osac create cluster -n smoke-cluster \
-      --catalog-item "${CLUSTER_TEMPLATE}" \
-      --pull-secret ci-pull-secret \
-      --ssh-public-key-file /root/.ssh/id_rsa.pub \
-      --version "${OCP_MINOR}.0" \
-      2>&1 || true
+    CLUSTER_CREATE_ARGS=(
+      -n smoke-cluster
+      --catalog-item "${CLUSTER_TEMPLATE}"
+      --pull-secret ci-pull-secret
+      --ssh-public-key-file /root/.ssh/id_rsa.pub
+      --version "${OCP_MINOR}.0"
+    )
+    if [[ "${CLUSTER_TEMPLATE}" == *"maas"* ]]; then
+      CLUSTER_CREATE_ARGS+=(-p tenant_name=smoke)
+    fi
+    osac create cluster "${CLUSTER_CREATE_ARGS[@]}" 2>&1 || true
     CLEANUP+=("osac delete cluster smoke-cluster 2>/dev/null")
 
     CO=$(osac get clusters 2>&1)
