@@ -630,7 +630,7 @@ fields:
           workers:
             size: 2
             baremetal_instance_type:
-              name: ci-worker-bm
+              name: g5
               shared: true
 CLCAT_EOF
 )
