@@ -531,9 +531,9 @@ grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
 ok "InstanceType 'smoke-2c4g'"
 
 grpcurl -insecure -H "Authorization: Bearer $SA_TOKEN" \
-  -d '{"object":{"metadata":{"name":"ci-worker-bm"},"spec":{"hardware":{"cpu":{"cores":8,"architecture":"amd64","threads_per_core":1},"memory":{"total_gb":16},"network_ports":[{"name":"eth0","role":"fabric","type":"ethernet","speed":"10G"}]},"description":"CI worker 8 cores 16 GB","host_label_selector":{"match_labels":{"usage":"ci"}}}}}' \
+  -d '{"object":{"metadata":{"name":"g5"},"spec":{"hardware":{"cpu":{"cores":8,"architecture":"amd64","threads_per_core":1},"memory":{"total_gb":16},"network_ports":[{"name":"eth0","role":"fabric","type":"ethernet","speed":"10G"}]},"description":"CI worker 8 cores 16 GB","host_label_selector":{"match_labels":{"usage":"ci"}}}}}' \
   "$INT_API" osac.private.v1.BareMetalInstanceTypes/Create 2>&1 || true
-ok "BareMetalInstanceType 'ci-worker-bm'"
+ok "BareMetalInstanceType 'g5'"
 
 osac tenant shared 2>&1
 osac create diskimage --name fedora-41 --source-ref quay.io/containerdisks/fedora:41 --architecture amd64 2>&1 || true
