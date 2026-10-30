@@ -376,7 +376,7 @@ EOF
       --version "${OCP_MINOR}.0"
     )
     if [[ "${CLUSTER_TEMPLATE}" == *"maas"* ]]; then
-      CLUSTER_CREATE_ARGS+=(-p tenant_name=smoke)
+      CLUSTER_CREATE_ARGS+=(--set template_parameters.tenant_name=smoke)
     fi
     osac create cluster "${CLUSTER_CREATE_ARGS[@]}" 2>&1 || true
     CLEANUP+=("osac delete cluster smoke-cluster 2>/dev/null")
