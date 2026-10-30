@@ -8,7 +8,7 @@ version: stable
 network: baremetalfake
 api_ip: 192.168.254.254
 metal3: true
-sslip: true
+# sslip: true
 numcpus: 64
 memory: 98304
 bootstrap_memory: 8192
