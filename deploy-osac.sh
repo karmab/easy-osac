@@ -700,10 +700,10 @@ systemctl restart chronyd 2>/dev/null || true
 # Fix NTP on cluster control plane nodes (chrony-wait blocks kubelet boot)
 for NODE_IP in $(oc get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null); do
   ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 core@"$NODE_IP" \
-    "grep -q '192.168.254.1' /etc/chrony.conf 2>/dev/null || echo 'server 192.168.254.1 iburst' | sudo tee -a /etc/chrony.conf && sudo systemctl restart chronyd" 2>/dev/null || true
+    "grep -q '192.168.253.1' /etc/chrony.conf 2>/dev/null || echo 'server 192.168.253.1 iburst' | sudo tee -a /etc/chrony.conf && sudo systemctl restart chronyd" 2>/dev/null || true
 done
 
-GATEWAY_IP=$(ip addr show baremetalfake 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+GATEWAY_IP=$(ip addr show osacnet 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
 SSH_PUB_KEY=$(cat /root/.ssh/id_rsa.pub 2>/dev/null || echo "")
 cat <<INFRAENV_EOF | oc apply -f -
 apiVersion: agent-install.openshift.io/v1beta1
@@ -718,7 +718,7 @@ spec:
     name: caas-pull-secret
   sshAuthorizedKey: "$SSH_PUB_KEY"
   additionalNTPSources:
-    - "${GATEWAY_IP:-192.168.254.1}"
+    - "${GATEWAY_IP:-192.168.253.1}"
 INFRAENV_EOF
 ok "InfraEnv 'smoke-infraenv' created (with NTP source)"
 

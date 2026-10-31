@@ -53,6 +53,13 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - run: git pull origin ${GITHUB_REF##*/}
+    - run: kcli delete cluster -y osac
+    - run: kcli delete plan -y smoke-worker
+    - run: kcli delete network -y osacnet || true
+    - run: kcli create network -c 192.168.253.0/24 -P dhcp_start=192.168.253.2 -P dhcp_end=192.168.253.230 osacnet
+    - run: kcli create dns -n osacnet -d karmalabs.corp -i 192.168.253.254 -a api-int.osac.karmalabs.corp api.osac
+    - run: kcli create dns -n osacnet -d karmalabs.corp -i 192.168.253.254 -a '*' apps.osac
+    - run: kcli create vm -c 2 -P start=false -P numcpus=32 -P memory=98304 -P disks=[100,100] -P nets='[{"name":"osacnet","mac":"aa:bb:cc:dd:ee:01"}]' smoke-worker
     - run: kcli create cluster openshift --pf osac.yml -P pull_secret=$PULL_SECRET $CLUSTER
 
   deploy-osac:

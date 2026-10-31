@@ -5,8 +5,8 @@ ovn_hostrouting: true
 ctlplanes: 3
 workers: 0
 version: stable
-network: baremetalfake
-api_ip: 192.168.254.254
+network: osacnet
+api_ip: 192.168.253.254
 metal3: true
 # sslip: true
 numcpus: 64
@@ -29,4 +29,4 @@ apps:
 #- name: sriov-network
 #  sriov: true
 metallb_ranges:
-- 192.168.254.242-192.168.254.251
+- 192.168.253.242-192.168.253.251

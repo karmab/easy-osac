@@ -313,15 +313,9 @@ EOF
   # Create worker VMs and register as BareMetalHosts (offline, BMF-claimable inventory)
   echo -e "  ${BOLD}Creating worker VMs and BareMetalHosts...${RESET}"
   WORKER_MACS=("aa:bb:cc:dd:ee:01" "aa:bb:cc:dd:ee:02")
-  for WORKER_IDX in 1 2; do
+  for WORKER_IDX in 0 1; do
     VM_NAME="smoke-worker-${WORKER_IDX}"
-    MAC="${WORKER_MACS[$((WORKER_IDX - 1))]}"
-
-    kcli create vm \
-      -P numcpus=32 -P memory=98304 -P disks='[100,100]' \
-      -P nets="[{\"name\":\"baremetalfake\",\"mac\":\"$MAC\"}]" \
-      -P start=false \
-      "$VM_NAME" 2>&1 || true
+    MAC="${WORKER_MACS[$((WORKER_IDX))]}"
 
     oc create secret generic "${VM_NAME}-bmc" -n "$CAAS_NS" \
       --from-literal=username=admin --from-literal=password=password \
@@ -342,13 +336,12 @@ spec:
   bootMACAddress: "$MAC"
   automatedCleaningMode: disabled
   bmc:
-    address: redfish-virtualmedia://192.168.254.1:9000/redfish/v1/Systems/local/$VM_NAME
+    address: redfish-virtualmedia://192.168.253.1:9000/redfish/v1/Systems/local/$VM_NAME
     credentialsName: ${VM_NAME}-bmc
     disableCertificateVerification: true
 EOF
   done
-  CLEANUP+=("kcli delete vm smoke-worker-1 smoke-worker-2 -y 2>/dev/null")
-  pass "Worker VMs + BareMetalHosts created"
+  pass "BareMetalHosts created"
 
   echo -e "  ${BOLD}⏳ Waiting for BMHs to register with BMO (up to 5 min)...${RESET}"
   for i in $(seq 1 30); do
@@ -357,10 +350,6 @@ EOF
     sleep 10
   done
   pass "BareMetalHosts registered with BMO"
-
-  # Pre-create DNS addnhosts file (entries added dynamically later)
-  ADDNHOSTS="/var/lib/libvirt/dnsmasq/baremetalfake.addnhosts"
-  > "$ADDNHOSTS" 2>/dev/null || true
 
   CLUSTER_TEMPLATE="${CLUSTER_TEMPLATE:-ocp-ci-small}"
   CLCAT_EXISTS=$(osac get clustercatalogitems 2>&1 | { grep -c "${CLUSTER_TEMPLATE}" || true; })
@@ -426,7 +415,7 @@ EOF
       fi
 
       # Patch InfraEnv with NTP source so agents can sync time
-      GATEWAY_IP=$(ip addr show baremetalfake 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+      GATEWAY_IP=$(ip addr show osacnec 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
       if [[ -n "$INFRAENV_NAME" ]] && [[ -n "$GATEWAY_IP" ]]; then
         oc patch infraenv "$INFRAENV_NAME" -n "$AGENT_NS" --type merge \
           -p "{\"spec\":{\"additionalNTPSources\":[\"${GATEWAY_IP}\"]}}" 2>/dev/null || true
@@ -502,7 +491,7 @@ EOF
         done
         if [[ -n "$KAS_IP" ]]; then
           BASE_DOMAIN=$(oc get hostedcluster "$HC_NAME" -n "$HC_NS" -o jsonpath='{.spec.dns.baseDomain}' 2>/dev/null)
-          kcli create dns -n baremetalfake -d ${BASE_DOMAIN} -i $KAS_IP -a api-int.${HC_NAME}.${BASE_DOMAIN} api.${HC_NAME}
+          kcli create dns -n osacnet -d ${BASE_DOMAIN} -i $KAS_IP -a api-int.${HC_NAME}.${BASE_DOMAIN} api.${HC_NAME}
           grep -q "api.${HC_NAME}.${BASE_DOMAIN}" /etc/hosts 2>/dev/null || \
             echo "${KAS_IP} api.${HC_NAME}.${BASE_DOMAIN}" >> /etc/hosts
           pass "DNS entries created for hosted cluster (api + api-int → $KAS_IP)"
@@ -526,7 +515,7 @@ EOF
         fi
 
         # Fix NTP on installed workers (chrony-wait blocks kubelet without NTP)
-        GATEWAY_IP=$(ip addr show baremetalfake 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+        GATEWAY_IP=$(ip addr show osacnet 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
         for WORKER_IP in $(oc get agents -n "$AGENT_NS" -o jsonpath='{.items[*].status.inventory.interfaces[0].ipV4Addresses[0]}' 2>/dev/null | tr ' ' '\n' | cut -d/ -f1); do
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 core@"$WORKER_IP" \
             "grep -q '${GATEWAY_IP}' /etc/chrony.conf 2>/dev/null || echo 'server ${GATEWAY_IP} iburst' | sudo tee -a /etc/chrony.conf && sudo systemctl restart chronyd" 2>/dev/null || true
@@ -569,7 +558,7 @@ EOF
           done
           if $ROUTER_READY; then
             pass "Ingress router running on $ROUTER_IP"
-            kcli create dns -n baremetalfake -d "$BASE_DOMAIN" -i "$ROUTER_IP" -a '*' "apps.${HC_NAME}" 2>&1 || true
+            kcli create dns -n osacnet -d "$BASE_DOMAIN" -i "$ROUTER_IP" -a '*' "apps.${HC_NAME}" 2>&1 || true
             pass "Wildcard DNS *.apps.${HC_NAME}.${BASE_DOMAIN} → $ROUTER_IP"
 
             # kcli wildcard DNS bounces the libvirt network + restarts libvirtd;
@@ -594,7 +583,7 @@ EOF
               pass "ClusterVersion $CV_VERSION fully deployed"
               if [[ "${CLUSTER_TEMPLATE}" == *"maas"* ]]; then
                 echo -e "  ${BOLD}⏳ Installing MetalLB on hosted cluster...${RESET}"
-                KUBECONFIG=/tmp/hc-kubeconfig kcli create app metallb-operator -P metallb_ranges=[192.168.254.200-192.168.254.216]
+                KUBECONFIG=/tmp/hc-kubeconfig kcli create app metallb-operator -P metallb_ranges=[192.168.253.231-192.168.253.253]
                 pass "MetalLB installed on hosted cluster"
                 echo -e "  ${BOLD}⏳ Installing LVMS on hosted cluster...${RESET}"
                 KUBECONFIG=/tmp/hc-kubeconfig kcli create app lvms-operator
